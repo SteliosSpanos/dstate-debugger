@@ -23,6 +23,8 @@ void format_size(unsigned long bytes, char *buffer, size_t bufsize);
 
 uint64_t get_timestamp();
 
+int is_root();
+
 int has_ptrace_capability();
 
 #endif
