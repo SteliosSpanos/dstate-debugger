@@ -309,3 +309,61 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 
 	return 0;
 }
+
+void print_diagnostics(const process_diagnostics_t *diag)
+{
+	const dstate_process_t *p = &diag->basic;
+
+	printf("\n");
+	printf("====================================================\n");
+	printf("   PROCESS DIAGNOSTICS: PID - %d\n", p->pid);
+	printf("====================================================\n");
+
+	printf("\nBasic Information:\n");
+	printf("   Command:      %-48s\n", p->comm);
+	printf("   State:        %c\n", p->state);
+	printf("   Parent PID:   %-48d\n", p->ppid);
+	printf("   Threads:      %-48d\n", p->num_threads);
+
+	printf("\nExecutable & Working Directory:\n");
+	printf("   Exe: %-55.55s\n", diag->exe[0] ? diag->exe : "(unknown)");
+	printf("   CWD: %-55.55s\n", diag->cwd[0] ? diag->cwd : "(unknown)");
+
+	printf("\nCommand Line:\n");
+	printf("   %.60s\n", diag->cmdline[0] ? diag->cmdline : "(none)");
+
+	printf("\nWait Channel (Kernel Function)\n");
+	printf("   %s\n", p->wchan[0] ? p->wchan : "(unknown)");
+	printf("   (This is the kernel function where the process is stuck)\n");
+
+	printf("\nSystem Call Information:\n");
+	if (p->syscall_nr >= 0)
+	{
+		printf("   Syscall:   %s (nr = %ld)\n", syscall_name(p->syscall_nr), p->syscall_nr);
+		printf("   Args:      0x%lx, 0x%lx, 0x%lx\n", p->syscall_args[0], p->syscall_args[1], p->syscall_args[2]);
+		printf("   IP:        0x%lx\n", p->instruction_ptr);
+		printf("   SP:        0x%lx\n", p->stack_ptr);
+	}
+	else
+		printf("   (Not currently in a system call)\n");
+
+	printf("\nMemory Usage:\n");
+	printf("    Virtual:     %lu KB\n", p->vm_size);
+	printf("    Resident:    %lu KB\n", p->vm_rss);
+
+	printf("\nKernel Stack Trace:\n");
+	if (diag->kernel_stack_valid && diag->kernel_stack[0])
+	{
+		char *line = strtok(diag->kernel_stack, "\n");
+		while (line)
+		{
+			printf("   %s\n", line);
+			line = strtok(NULL, "\n");
+		}
+	}
+	else
+	{
+		printf("   (Cannot read - requires root or CAP_SYS_PTRACE)\n");
+	}
+	printf("\n");
+}
