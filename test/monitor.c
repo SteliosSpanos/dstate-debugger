@@ -89,22 +89,23 @@ int main()
 
 		analyze_child(pid);
 
-		printf("\n[Monitor]: Trying SIGKILL on child (kill -9 %d)...\n", pid);
-		kill(pid, SIGKILL);
+		printf("\n[Monitor]: Trying SIGTERM on child (kill %d)...\n", pid);
+		kill(pid, SIGTERM);
 
 		sleep(2);
 
-		printf("[Monitor]: After SIGKILL:");
+		printf("[Monitor]: After SIGTERM:");
 		char state = analyze_child(pid);
 
 		if (state == 'D')
 		{
-			printf("\n[Monitor]: The process ignored SIGKILL, because it's in D-State\n");
-			printf("[Monitor]: You must close FUSE Daemon to free the child\n");
+			printf("\n[Monitor]: SIGTERM was ignored! Process is still in D-State.\n");
+			printf("[Monitor]: On modern kernels, SIGKILL can wake FUSE D-state (TASK_KILLABLE).\n");
+			printf("[Monitor]: But the real fix is to kill the FUSE daemon.\n");
 		}
 		else
 		{
-			printf("\n[Monitor]: The process was killed (state: %c)\n", state);
+			printf("\n[Monitor]: Process exited (state: %c)\n", state);
 		}
 
 		waitpid(pid, NULL, WNOHANG);
