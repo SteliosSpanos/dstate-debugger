@@ -9,55 +9,55 @@
 #include "../include/proc_utils.h"
 
 static const char *syscall_names[] = {
-      [0]   = "read",
-      [1]   = "write",
-      [2]   = "open",
-      [3]   = "close",
-      [4]   = "stat",
-      [5]   = "fstat",
-      [6]   = "lstat",
-      [7]   = "poll",
-      [8]   = "lseek",
-      [9]   = "mmap",
-      [10]  = "mprotect",
-      [11]  = "munmap",
-      [16]  = "ioctl",
-      [17]  = "pread64",
-      [18]  = "pwrite64",
-      [19]  = "readv",
-      [20]  = "writev",
-      [21]  = "access",
-      [22]  = "pipe",
-      [23]  = "select",
-      [32]  = "dup",
-      [33]  = "dup2",
-      [35]  = "nanosleep",
-      [39]  = "getpid",
-      [41]  = "socket",
-      [42]  = "connect",
-      [43]  = "accept",
-      [44]  = "sendto",
-      [45]  = "recvfrom",
-      [56]  = "clone",
-      [57]  = "fork",
-      [59]  = "execve",
-      [60]  = "exit",
-      [61]  = "wait4",
-      [62]  = "kill",
-      [78]  = "getdents",
-      [79]  = "getcwd",
-      [80]  = "chdir",
-      [82]  = "rename",
-      [83]  = "mkdir",
-      [84]  = "rmdir",
-      [85]  = "creat",
-      [87]  = "unlink",
-      [89]  = "readlink",
-      [90]  = "chmod",
-      [217] = "getdents64",
-      [257] = "openat",
-      [262] = "newfstatat",
-      [288] = "accept4",
+	[0] = "read",
+	[1] = "write",
+	[2] = "open",
+	[3] = "close",
+	[4] = "stat",
+	[5] = "fstat",
+	[6] = "lstat",
+	[7] = "poll",
+	[8] = "lseek",
+	[9] = "mmap",
+	[10] = "mprotect",
+	[11] = "munmap",
+	[16] = "ioctl",
+	[17] = "pread64",
+	[18] = "pwrite64",
+	[19] = "readv",
+	[20] = "writev",
+	[21] = "access",
+	[22] = "pipe",
+	[23] = "select",
+	[32] = "dup",
+	[33] = "dup2",
+	[35] = "nanosleep",
+	[39] = "getpid",
+	[41] = "socket",
+	[42] = "connect",
+	[43] = "accept",
+	[44] = "sendto",
+	[45] = "recvfrom",
+	[56] = "clone",
+	[57] = "fork",
+	[59] = "execve",
+	[60] = "exit",
+	[61] = "wait4",
+	[62] = "kill",
+	[78] = "getdents",
+	[79] = "getcwd",
+	[80] = "chdir",
+	[82] = "rename",
+	[83] = "mkdir",
+	[84] = "rmdir",
+	[85] = "creat",
+	[87] = "unlink",
+	[89] = "readlink",
+	[90] = "chmod",
+	[217] = "getdents64",
+	[257] = "openat",
+	[262] = "newfstatat",
+	[288] = "accept4",
 };
 
 #define SYSCALL_TABLE_SIZE (sizeof(syscall_names))
@@ -106,21 +106,20 @@ int read_process_stat(pid_t pid, dstate_process_t *proc)
 		return -1;
 
 	int parsed = sscanf(ptr,
-          	"%c %d %*d %*d %*d %*d %*u "
-          	"%*u %*u %*u %*u "
-          	"%lu %lu %*d %*d "
-          	"%*d %*d %d "
-          	"%*d %llu "
-          	"%lu %lu",
-          	&proc->state,
-          	&proc->ppid,
-          	&proc->utime,
-          	&proc->stime,
-          	&proc->num_threads,
-          	&proc->start_time,
-          	&proc->vm_size,
-          	&proc->vm_rss
-      	);
+						"%c %d %*d %*d %*d %*d %*u "
+						"%*u %*u %*u %*u "
+						"%lu %lu %*d %*d "
+						"%*d %*d %d "
+						"%*d %llu "
+						"%lu %lu",
+						&proc->state,
+						&proc->ppid,
+						&proc->utime,
+						&proc->stime,
+						&proc->num_threads,
+						&proc->start_time,
+						&proc->vm_size,
+						&proc->vm_rss);
 
 	if (parsed < 2)
 		return -1;
@@ -164,13 +163,11 @@ int read_process_status(pid_t pid, dstate_process_t *proc)
 			else if (strcmp(key, "VmRSS") == 0)
 				proc->vm_rss = strlout(value, NULL, 10);
 		}
-
 	}
 
 	fclose(fp);
 	return 0;
 }
-
 
 int read_process_wchan(pid_t pid, char *wchan, size_t len)
 {
@@ -211,21 +208,20 @@ int read_process_syscall(pid_t pid, dstate_process_t *proc)
 		return 0;
 
 	int parsed = sscanf(buffer,
-          	"%ld %lx %lx %lx %lx %lx %lx %lx %lx",
-          	&proc->syscall_nr,
-          	&proc->syscall_args[0],
-          	&proc->syscall_args[1],
-          	&proc->syscall_args[2],
-          	&proc->syscall_args[3],
-          	&proc->syscall_args[4],
-          	&proc->syscall_args[5],
-         	&proc->stack_ptr,
-          	&proc->instruction_ptr
-      	);
+						"%ld %lx %lx %lx %lx %lx %lx %lx %lx",
+						&proc->syscall_nr,
+						&proc->syscall_args[0],
+						&proc->syscall_args[1],
+						&proc->syscall_args[2],
+						&proc->syscall_args[3],
+						&proc->syscall_args[4],
+						&proc->syscall_args[5],
+						&proc->stack_ptr,
+						&proc->instruction_ptr);
 
 	if (parsed < 1)
 		proc->syscall_nr = -1;
-		return -1;
+	return -1;
 
 	return 0;
 }
@@ -236,7 +232,7 @@ int read_process_stack(pid_t pid, char *stack, size_t len)
 
 	snprintf(path, sizeof(path), "/proc/%d/stack", pid);
 
-	bytes = read_proc_file(path, stack, len);
+	ssize_t bytes = read_proc_file(path, stack, len);
 
 	if (bytes < 0)
 	{
