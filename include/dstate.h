@@ -113,6 +113,7 @@ int read_process_wchan(pid_t pid, char *wchan, size_t len);
 int read_process_stack(pid_t pid, char *stack, size_t len);
 int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag);
 const char *syscall_name(long nr);
+void print_diagnostics(const process_diagnostics_t *diag);
 
 int try_all_coredump_methods(pid_t pid, coredump_result_t *results, int *count);
 int try_ptrace_coredump(pid_t pid, coredump_result_t *result);
