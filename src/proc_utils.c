@@ -72,18 +72,21 @@ ssize_t read_proc_line(const char *path, char *buffer, size_t bufsize)
 
 ssize_t read_proc_link(const char *path, char *buffer, size_t bufsize)
 {
-    ssize_t len;
+    	ssize_t len;
 
-    len = readlink(path, buffer, bufsize - 1);
+	if (buffsize == 0)
+		return -1;
 
-    if (len < 0)
-    {
-        buffer[0] = '\0';
-        return -1;
-    }
+    	len = readlink(path, buffer, bufsize - 1);
 
-    buffer[bufsize] = '\0';
-    return len;
+    	if (len < 0)
+    	{
+        	buffer[0] = '\0';
+        	return -1;
+    	}
+
+    	buffer[len] = '\0';
+    	return len;
 }
 
 char *build_proc_path(char *buffer, size_t bufsize, pid_t pid, const char *file)

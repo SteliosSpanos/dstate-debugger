@@ -255,10 +255,10 @@ int read_process_stack(pid_t pid, char *stack, size_t len)
 int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 {
 	char path[128];
+	ssize_t bytes_read;
 
 	memset(diag, 0, sizeof(*diag));
 	diag->blocking_fd = -1;
-
 	diag->basic.pid = pid;
 
 	if (read_process_stat(pid, &diag->basic) < 0)
@@ -273,19 +273,39 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 	if (read_process_stack(pid, diag->kernel_stack, sizeof(diag->kernel_stack)) == 0)
 		diag->kernel_stack_valid = 1;
 
-	build_proc_path(path, sizeof(path), "exe");
-	read_proc_link(path, diag->exe, sizeof(diag->exe));
+	if (build_proc_path(path, sizeof(path), pid, "exe"))
+		read_proc_link(path, diag->exe, sizeof(diag->exe));
 
-	build_proc_path(path sizeof(path), "cwd");
-	read_proc_link(path, diag->cwd, sizeof(diag->cwd));
+	if (build_proc_path(path, sizeof(path), pid, "cwd"))
+		read_proc_link(path, diag->cwd, sizeof(diag->cwd));
 
-	build_proc_path(path, sizeof(path), "cmdline");
-	if (read_proc_file(path, diag->cmdline, sizeof(diag->cmdline)) > 0)
+	if (build_proc_path(path, sizeof(path), pid, "cmdline"))
 	{
-		for (size_t i = 0; i < sizeof(diag->cmdline) - 1; ++i)
+		bytes_read = read_proc_file(path, diag->cmdline, sizeof(diag->cmdline));
+
+		if (bytes_read > 0)
 		{
-			if (diag->cmdline[i] == '\0' && diag->cmdline[i+1] == '\0')
-				diag->cmdline[i] = ' ';
+			for (int i = 0; i < (int)bytes_read - 1; ++i)
+			{
+				if (diag->cmdline[i] == '\0')
+					diag->cmdline[i] = ' ';
+			}
+		}
+	}
+
+	if (diag->basic.syscall_nr != -1 && (diag->basic.state == 'D' || diag->basic.state == 'S'))
+	{
+		int target_fd = -1;
+
+		if (diag->basic.syscall_nr == 0 || diag->basic.syscall_nr == 1)
+			target_fd = (int)diag->basic.syscall_args[0];
+
+		if (target_fd >= 0)
+		{
+			diag->blocking_fd = target_fd;
+
+			snprintf(path, sizeof(path), "/proc/%d/fd/%d", pid, target_fd);
+			read_proc_link(path, diag->blocking_path, sizeof(diag->blocking_path));
 		}
 	}
 
