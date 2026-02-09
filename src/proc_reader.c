@@ -247,7 +247,46 @@ int read_process_stack(pid_t pid, char *stack, size_t len)
 	if (bytes == 0)
 	{
 		snprintf(stack, len, "(empty - process may not be in kernel)");
-		return 0;
+	}
+
+	return 0;
+}
+
+int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
+{
+	char path[128];
+
+	memset(diag, 0, sizeof(*diag));
+	diag->blocking_fd = -1;
+
+	diag->basic.pid = pid;
+
+	if (read_process_stat(pid, &diag->basic) < 0)
+		return -1;
+
+	read_process_status(pid, &diag->basic);
+
+	read_process_wchan(pid, diag->basic.wchan, sizeof(diag->basic.wchan));
+
+	read_process_syscall(pid, &diag->basic);
+
+	if (read_process_stack(pid, diag->kernel_stack, sizeof(diag->kernel_stack)) == 0)
+		diag->kernel_stack_valid = 1;
+
+	build_proc_path(path, sizeof(path), "exe");
+	read_proc_link(path, diag->exe, sizeof(diag->exe));
+
+	build_proc_path(path sizeof(path), "cwd");
+	read_proc_link(path, diag->cwd, sizeof(diag->cwd));
+
+	build_proc_path(path, sizeof(path), "cmdline");
+	if (read_proc_file(path, diag->cmdline, sizeof(diag->cmdline)) > 0)
+	{
+		for (size_t i = 0; i < sizeof(diag->cmdline) - 1; ++i)
+		{
+			if (diag->cmdline[i] == '\0' && diag->cmdline[i+1] == '\0')
+				diag->cmdline[i] = ' ';
+		}
 	}
 
 	return 0;
