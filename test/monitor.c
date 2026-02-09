@@ -1,11 +1,10 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <sys/wait.h>
 #include <signal.h>
 #include <string.h>
 
-char analyze_child(int pid)
+char analyze_child(pid_t pid)
 {
 	char stat_path[64];
 	char stack_path[64];
@@ -62,7 +61,7 @@ char analyze_child(int pid)
 	return state;
 }
 
-int main()
+int main(void)
 {
 	printf("[Monitor]: Starting Search (PID %d)\n", getpid());
 
@@ -108,7 +107,6 @@ int main()
 			printf("\n[Monitor]: Process exited (state: %c)\n", state);
 		}
 
-		waitpid(pid, NULL, WNOHANG);
 	}
 
 	return 0;
