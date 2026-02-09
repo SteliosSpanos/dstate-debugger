@@ -1,9 +1,6 @@
-#define _GNU_SOURCE
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <errno.h>
 
 #include "../include/dstate.h"
 #include "../include/proc_utils.h"
@@ -133,42 +130,6 @@ int read_process_stat(pid_t pid, dstate_process_t *proc)
 	return 0;
 }
 
-int read_process_status(pid_t pid, dstate_process_t *proc)
-{
-	char path[64];
-	char line[256];
-	FILE *fp;
-
-	snprintf(path, sizeof(path), "/proc/%d/status", pid);
-
-	fp = fopen(path, "r");
-	if (!fp)
-		return -1;
-
-	while (fgets(line, sizeof(line), fp))
-	{
-		char key[32];
-		char value[128];
-
-		if (parse_status_line(line, key, sizeof(key), value, sizeof(value)))
-		{
-			if (strcmp(key, "Tgid") == 0)
-				proc->tgid = atoi(value);
-			else if (strcmp(key, "Ppid") == 0)
-				proc->ppid = atoi(value);
-			else if (strcmp(key, "Threads") == 0)
-				proc->num_threads = atoi(value);
-			else if (strcmp(key, "VmSize") == 0)
-				proc->vm_size = strtol(value, NULL, 10);
-			else if (strcmp(key, "VmRSS") == 0)
-				proc->vm_rss = strtol(value, NULL, 10);
-		}
-	}
-
-	fclose(fp);
-	return 0;
-}
-
 int read_process_wchan(pid_t pid, char *wchan, size_t len)
 {
 	char path[64];
@@ -186,7 +147,7 @@ int read_process_wchan(pid_t pid, char *wchan, size_t len)
 	{
 		strncpy(wchan, "(running)", len - 1);
 		wchan[len - 1] = '\0';
-		return -1;
+		return 0;
 	}
 
 	return 0;
@@ -261,8 +222,6 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 
 	if (read_process_stat(pid, &diag->basic) < 0)
 		return -1;
-
-	read_process_status(pid, &diag->basic);
 
 	read_process_wchan(pid, diag->basic.wchan, sizeof(diag->basic.wchan));
 
@@ -354,7 +313,11 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	printf("\nKernel Stack Trace:\n");
 	if (diag->kernel_stack_valid && diag->kernel_stack[0])
 	{
-		char *line = strtok(diag->kernel_stack, "\n");
+		char stack_copy[MAX_STACK_LEN];
+		strncpy(stack_copy, diag->kernel_stack, sizeof(stack_copy));
+		stack_copy[sizeof(stack_copy) - 1] = '\0';
+
+		char *line = strtok(stack_copy, "\n");
 		while (line)
 		{
 			printf("   %s\n", line);
