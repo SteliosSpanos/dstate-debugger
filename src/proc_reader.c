@@ -60,7 +60,7 @@ static const char *syscall_names[] = {
 	[288] = "accept4",
 };
 
-#define SYSCALL_TABLE_SIZE (sizeof(syscall_names))
+#define SYSCALL_TABLE_SIZE (sizeof(syscall_names) / sizeof(syscall_names[0]))
 
 const char *syscall_name(long nr)
 {
@@ -83,7 +83,7 @@ int read_process_stat(pid_t pid, dstate_process_t *proc)
 	char *ptr;
 	char *comm_start, *comm_end;
 
-	snprintf(path, sizeof(path), "proc/%d/stat", pid);
+	snprintf(path, sizeof(path), "/proc/%d/stat", pid);
 
 	if (read_proc_file(path, buffer, sizeof(buffer)) < 0)
 		return -1;
@@ -94,7 +94,7 @@ int read_process_stat(pid_t pid, dstate_process_t *proc)
 	if (comm_start && comm_end && comm_end > comm_start)
 	{
 		size_t comm_len = comm_end - comm_start - 1;
-		if (comm_len > sizeof(proc->comm))
+		if (comm_len >= sizeof(proc->comm))
 			comm_len = sizeof(proc->comm) - 1;
 
 		strncpy(proc->comm, comm_start + 1, comm_len);
@@ -159,9 +159,9 @@ int read_process_status(pid_t pid, dstate_process_t *proc)
 			else if (strcmp(key, "Threads") == 0)
 				proc->num_threads = atoi(value);
 			else if (strcmp(key, "VmSize") == 0)
-				proc->vm_size = strlout(value, NULL, 10);
+				proc->vm_size = strtol(value, NULL, 10);
 			else if (strcmp(key, "VmRSS") == 0)
-				proc->vm_rss = strlout(value, NULL, 10);
+				proc->vm_rss = strtol(value, NULL, 10);
 		}
 	}
 
@@ -220,8 +220,10 @@ int read_process_syscall(pid_t pid, dstate_process_t *proc)
 						&proc->instruction_ptr);
 
 	if (parsed < 1)
+	{
 		proc->syscall_nr = -1;
-	return -1;
+		return -1;
+	}
 
 	return 0;
 }

@@ -117,7 +117,7 @@ int parse_status_line(const char *line, char *key, size_t keylen, char *value, s
     const char *val_start;
     size_t key_len;
 
-    colon = strchr(line, ":");
+    colon = strchr(line, ':');
     if (!colon)
         return 0;
 

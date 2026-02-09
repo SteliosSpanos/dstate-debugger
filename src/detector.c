@@ -35,7 +35,7 @@ static char get_process_state(pid_t pid)
     if (read_proc_file(path, buffer, sizeof(buffer)) < 0)
         return '\0';
 
-    state_ptr = strrchr(buffer, ")");
+    state_ptr = strrchr(buffer, ')');
     if (!state_ptr || state_ptr[1] != ' ')
         return '\0';
 
@@ -75,8 +75,7 @@ int find_dstate_processes(dstate_process_t **results, int *count)
         char state;
 
         if (!is_pid_dir(entry->d_name))
-            ;
-        continue;
+            continue;
 
         pid = (pid_t)atoi(entry->d_name);
         state = get_process_state(pid);
