@@ -165,6 +165,9 @@ int read_process_syscall(pid_t pid, dstate_process_t *proc)
 	if (read_proc_line(path, buffer, sizeof(buffer)) < 0)
 		return -1;
 
+	if (strncmp(buffer, "running", 7) == 0)
+		return 0;
+
 	if (strncmp(buffer, "-1", 2) == 0)
 		return 0;
 
@@ -253,8 +256,13 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 	if (diag->basic.syscall_nr != -1 && (diag->basic.state == 'D' || diag->basic.state == 'S'))
 	{
 		int target_fd = -1;
+		long nr = diag->basic.syscall_nr;
 
-		if (diag->basic.syscall_nr == 0 || diag->basic.syscall_nr == 1)
+		if (nr == 0 || nr == 1 ||
+			nr == 16 || nr == 17 ||
+			nr == 18 || nr == 19 ||
+			nr == 20 || nr == 44 ||
+			nr == 45)
 			target_fd = (int)diag->basic.syscall_args[0];
 
 		if (target_fd >= 0)
