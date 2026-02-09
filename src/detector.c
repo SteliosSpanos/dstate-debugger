@@ -132,30 +132,29 @@ int find_dstate_processes(dstate_process_t **results, int *count)
 
 void free_dstate_list(dstate_process_t *list)
 {
-	free(list);
+    free(list);
 }
 
-void print_dstate_summary(const dstate_process_t *procs, int count);
+void print_dstate_summary(const dstate_process_t *procs, int count)
 {
-	printf("\n=== D-State Processes Found: %d ===\n", count);
-	if (count == 0)
-	{
-		printf("No processes in D-State.\n");
-		return;
-	}
+    printf("\n=== D-State Processes Found: %d ===\n", count);
+    if (count == 0)
+    {
+        printf("No processes in D-State.\n");
+        return;
+    }
 
-	printf("%-8s %-20s %-8s %-30s\n", "PID", "COMMAND", "STATE", "WAITING IN");
-      	printf("%-8s %-20s %-8s %-30s\n", "---", "-------", "-----", "----------");
+    printf("%-8s %-20s %-8s %-30s\n", "PID", "COMMAND", "STATE", "WAITING IN");
+    printf("%-8s %-20s %-8s %-30s\n", "---", "-------", "-----", "----------");
 
-	for (int i = 0; i < count; ++i)
-	{
-		const dstate_process_t *p = &procs[i];
-		printf("%-8d %-20.20s %-8c %-30.30s\n",
-                p->pid,
-                p->comm[0] ? p->comm : "(unknown)",
-                p->state,
-                p->wchan[0] ? p->wchan : "(unknown)");
-
-	}
-	printf("\n");
+    for (int i = 0; i < count; ++i)
+    {
+        const dstate_process_t *p = &procs[i];
+        printf("%-8d %-20.20s %-8c %-30.30s\n",
+               p->pid,
+               p->comm[0] ? p->comm : "(unknown)",
+               p->state,
+               p->wchan[0] ? p->wchan : "(unknown)");
+    }
+    printf("\n");
 }
