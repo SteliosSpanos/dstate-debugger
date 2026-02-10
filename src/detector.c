@@ -70,41 +70,41 @@ int find_dstate_processes(dstate_process_t **results, int *count)
     while ((entry = readdir(proc_dir)) != NULL)
     {
         pid_t pid;
-        char state;
 
         if (!is_pid_dir(entry->d_name))
             continue;
 
         pid = (pid_t)atoi(entry->d_name);
-        state = get_process_state(pid);
 
-        if (state == 'D')
+        dstate_process_t tmp;
+        memset(&tmp, 0, sizeof(tmp));
+        tmp.pid = pid;
+
+        if (read_process_stat(pid, &tmp) < 0)
+            continue;
+
+        if (tmp.state != 'D')
+            continue;
+
+        if (num_found >= capacity)
         {
-            if (num_found >= capacity)
+            capacity *= 2;
+            dstate_process_t *new_list = realloc(list, sizeof(dstate_process_t) * capacity);
+            if (!new_list)
             {
-                capacity *= 2;
-                dstate_process_t *new_list = realloc(list, sizeof(dstate_process_t) * capacity);
-                if (!new_list)
-                {
-                    free(list);
-                    closedir(proc_dir);
-                    return -1;
-                }
-
-                list = new_list;
+                free(list);
+                closedir(proc_dir);
+                return -1;
             }
 
-            dstate_process_t *proc = &list[num_found];
-            memset(proc, 0, sizeof(*proc));
-            proc->pid = pid;
-            proc->state = state;
-
-            read_process_stat(pid, proc);
-            read_process_wchan(pid, proc->wchan, sizeof(proc->wchan));
-            read_process_syscall(pid, proc);
-
-            num_found++;
+            list = new_list;
         }
+
+        list[num_found] = tmp;
+        read_process_wchan(pid, list[num_found].wchan, sizeof(list[num_found].wchan));
+        read_process_syscall(pid, &list[num_found]);
+
+        num_found++;
     }
 
     closedir(proc_dir);
