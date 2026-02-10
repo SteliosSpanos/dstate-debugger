@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <stdint.h>
 
+#define DSTATE_PROC_GONE 1
 #define MAX_COMM_LEN 256
 #define MAX_PATH_LEN 512
 #define MAX_WCHAN_LEN 64

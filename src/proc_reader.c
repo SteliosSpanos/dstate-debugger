@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
+#include <signal.h>
 
 #include "../include/dstate.h"
 #include "../include/proc_utils.h"
@@ -224,7 +226,11 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 	diag->basic.pid = pid;
 
 	if (read_process_stat(pid, &diag->basic) < 0)
+	{
+		if (kill(pid, 0) == -1 && errno == ESRCH)
+			return DSTATE_PROC_GONE;
 		return -1;
+	}
 
 	read_process_wchan(pid, diag->basic.wchan, sizeof(diag->basic.wchan));
 

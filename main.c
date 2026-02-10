@@ -20,8 +20,13 @@ int main(void)
 	{
 		process_diagnostics_t diag;
 
-		if (read_full_diagnostics(procs[i].pid, &diag) == 0)
+		int ret = read_full_diagnostics(procs[i].pid, &diag);
+		if (ret == 0)
 			print_diagnostics(&diag);
+		else if (ret == DSTATE_PROC_GONE)
+			continue;
+		else
+			fprintf(stderr, "Failed to read diagnostics for PID %d\n", procs[i].pid);
 	}
 
 	free_dstate_list(procs);
