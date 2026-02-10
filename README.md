@@ -4,6 +4,24 @@ Linux debugging tool that detects and diagnoses processes stuck in D-state (unin
 
 Written in C99 for x86-64 Linux.
 
+## Project Structure
+
+```
+dstate-debugger/
+├── main.c                 Entry point, CLI argument handling
+├── Makefile
+├── include/
+│   ├── dstate.h           Data structures and API declarations
+│   └── proc_utils.h       Low-level /proc utility interface
+├── src/
+│   ├── proc_utils.c       /proc file I/O, symlinks, path building
+│   ├── detector.c         D-state process scanning
+│   └── proc_reader.c      Per-PID diagnostics, x86-64 syscall table
+└── test/
+    ├── monitor.c          Forks child into D-state, demonstrates signal immunity
+    └── trap_fs.c          FUSE filesystem that blocks reads forever
+```
+
 ## Architecture
 
 Three layers, all reading from `/proc`:
