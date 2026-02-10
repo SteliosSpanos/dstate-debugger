@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/types.h>
 
 char analyze_child(pid_t pid)
 {
@@ -106,7 +107,6 @@ int main(void)
 		{
 			printf("\n[Monitor]: Process exited (state: %c)\n", state);
 		}
-
 	}
 
 	return 0;
