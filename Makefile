@@ -24,6 +24,18 @@ test: trap_fs monitor dstate
 	sudo ./dstate
 	@$(MAKE) --no-print-directory kill
 
+test-pid: trap_fs dstate
+	@mkdir -p /tmp/fuse_mount
+	@kill -9 $$(pgrep trap_fs) 2>/dev/null; fusermount -u /tmp/fuse_mount 2>/dev/null; sleep 1
+	./trap_fs /tmp/fuse_mount -s &
+	@sleep 1
+	@echo "Trapping process..."
+	@cat /tmp/fuse_mount/trap.txt &
+	@sleep 1
+	@echo "Running dstate on PID $$(pgrep -o -f 'cat /tmp/fuse_mount/trap.txt')..."
+	sudo ./dstate -p $$(pgrep -o -f 'cat /tmp/fuse_mount/trap.txt')
+	@$(MAKE) --no-print-directory kill
+
 kill:
 	@kill -9 $$(pgrep trap_fs) 2>/dev/null; true
 	@fusermount -u /tmp/fuse_mount 2>/dev/null; true
@@ -32,4 +44,19 @@ kill:
 clean: kill
 	rm -f dstate monitor trap_fs
 
-.PHONY: all clean test kill
+help:
+	@echo "Targets:"
+	@echo "  make            Build dstate"
+	@echo "  make monitor    Build test monitor"
+	@echo "  make trap_fs    Build FUSE test filesystem (requires libfuse-dev)"
+	@echo "  make test       Full test: trap_fs + monitor + dstate (requires sudo)"
+	@echo "  make test-pid   Test the -p flag: trap a process, diagnose by PID"
+	@echo "  make kill       Kill trap_fs and unmount FUSE"
+	@echo "  make clean      Remove binaries and unmount FUSE"
+	@echo ""
+	@echo "Usage:"
+	@echo "  sudo ./dstate          Scan all processes for D-state"
+	@echo "  sudo ./dstate -p PID   Diagnose a specific process"
+	@echo "  ./dstate -h            Show help"
+
+.PHONY: all clean test kill test-pid help
