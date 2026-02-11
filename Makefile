@@ -46,7 +46,7 @@ kill:
 	@echo "Cleanup done."
 
 clean: kill
-	rm -f dstate monitor trap_fs
+	rm -f dstate monitor trap_fs unit_test
 
 help:
 	@echo "Targets:"
@@ -63,4 +63,4 @@ help:
 	@echo "  sudo ./dstate -p PID   Diagnose a specific process"
 	@echo "  ./dstate -h            Show help"
 
-.PHONY: all clean test kill test-pid help
+.PHONY: all clean test kill test-pid unit-test help
