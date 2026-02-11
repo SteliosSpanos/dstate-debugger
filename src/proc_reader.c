@@ -320,6 +320,13 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	else
 		printf("   (Not currently in a system call)\n");
 
+	if (diag->blocking_fd >= 0)
+	{
+		printf("\nBlocking File Descriptor:\n");
+		printf("   FD:        %d\n", diag->blocking_fd);
+		printf("   Path:      %s\n", diag->blocking_path[0] ? diag->blocking_path : "(unknown)");
+	}
+
 	printf("\nMemory Usage:\n");
 	printf("    Virtual:     %lu KB\n", p->vm_size);
 	printf("    Resident:    %lu KB\n", p->vm_rss);
