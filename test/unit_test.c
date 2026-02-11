@@ -54,3 +54,23 @@ void test_is_pid_dir_invalid(void)
     assert(is_pid_dir(NULL) == 0);
     printf("  PASS: is_pid_dir invalid names\n");
 }
+
+int main(void)
+{
+    printf("Running unit tests...\n\n");
+
+    printf("[syscall_name]\n");
+    test_syscall_name_known();
+    test_syscall_name_unknown();
+
+    printf("\n[build_proc_path]\n");
+    test_build_proc_path_normal();
+    test_build_proc_path_buffer_too_small();
+
+    printf("\n[is_pid_dir]\n");
+    test_is_pid_dir_valid();
+    test_is_pid_dir_invalid();
+
+    printf("\nAll test passed.\n");
+    return 0;
+}
