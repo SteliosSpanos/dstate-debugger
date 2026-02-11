@@ -1,8 +1,12 @@
-# Dstate-Debugger
+# dstate-debugger
 
-Linux debugging tool that detects and diagnoses processes stuck in D-state (uninterruptible sleep). Scans `/proc` to identify blocked processes, reads kernel stack traces, maps syscalls to names, and reports what they're blocked on.
+Linux debugging tool that detects and diagnoses processes stuck in D-state (uninterruptible sleep). Scans `/proc` to identify blocked processes, reads kernel stack traces, maps syscalls to names, and reports which file descriptor they're blocked on.
 
-Written in C99 for x86-64 Linux.
+Written in C99 for x86-64 Linux. No runtime dependencies beyond glibc.
+
+## Why D-state matters
+
+When a Linux process enters D-state (uninterruptible sleep), it cannot be killed — not even by `SIGKILL`. This commonly happens with FUSE filesystems when the userspace daemon deadlocks or hangs. Traditional debuggers like `gdb` rely on `PTRACE`, which also fails on D-state processes. This tool bypasses that limitation by reading directly from `/proc`.
 
 ## Project Structure
 
@@ -18,6 +22,7 @@ dstate-debugger/
 │   ├── detector.c         D-state process scanning
 │   └── proc_reader.c      Per-PID diagnostics, x86-64 syscall table
 └── test/
+    ├── unit_test.c        Unit tests for parsing and utility functions
     ├── monitor.c          Forks child into D-state, demonstrates signal immunity
     └── trap_fs.c          FUSE filesystem that blocks reads forever
 ```
@@ -29,8 +34,8 @@ Three layers, all reading from `/proc`:
 | Layer | File | Purpose |
 |-------|------|---------|
 | Utilities | `src/proc_utils.c` | Low-level `/proc` I/O: reading files, symlinks, building `/proc/[pid]/...` paths |
-| Detection | `src/detector.c` | Scans `/proc` for D-state processes, returns dynamic arrays |
-| Diagnostics | `src/proc_reader.c` | Per-PID analysis: stat, wchan, syscall, stack traces, blocking fd detection. Contains x86-64 syscall table |
+| Detection | `src/detector.c` | Scans `/proc` for D-state processes, returns dynamically-allocated arrays |
+| Diagnostics | `src/proc_reader.c` | Per-PID analysis: stat, wchan, syscall, kernel stack traces, blocking fd detection. Contains x86-64 syscall number-to-name table |
 
 Headers: `include/dstate.h` (structs + API), `include/proc_utils.h` (utility interface).
 
@@ -47,8 +52,9 @@ sudo apt-get install libfuse-dev
 
 ```bash
 make            # builds dstate
+make unit-test  # builds and runs unit tests
 make monitor    # builds test monitor
-make trap_fs    # builds FUSE test filesystem
+make trap_fs    # builds FUSE test filesystem (requires libfuse-dev)
 make help       # show all targets and usage
 make clean      # removes binaries, unmounts FUSE
 ```
@@ -98,6 +104,10 @@ System Call Information:
    IP:        0x7f56a66f2687
    SP:        0x7ffe6acee8f0
 
+Blocking File Descriptor:
+   FD:        3
+   Path:      /tmp/fuse_mount/trap.txt
+
 Memory Usage:
     Virtual:     5812 KB
     Resident:    1748 KB
@@ -114,13 +124,23 @@ Kernel Stack Trace:
 
 ## Testing
 
-No automated tests. Manual testing uses a FUSE filesystem that blocks processes in D-state.
+### Unit tests
+
+Tests for pure logic functions that don't require `/proc` or root privileges: syscall name lookup, `/proc` path construction, PID directory validation.
+
+```bash
+make unit-test    # builds and runs unit tests
+```
+
+### Integration tests
+
+Manual testing uses a FUSE filesystem (`trap_fs`) that blocks reads forever, putting any process that touches it into D-state.
 
 ```bash
 # Terminal 1: start FUSE daemon that blocks reads forever
 ./trap_fs /tmp/fuse_mount
 
-# Terminal 2: fork a child that reads from FUSE mount
+# Terminal 2: fork a child that reads from FUSE mount, monitor state
 ./monitor
 
 # Terminal 3: run dstate as root
@@ -137,6 +157,14 @@ make test       # full test: trap_fs + monitor + dstate (requires sudo)
 make test-pid   # test the -p flag: trap a process, diagnose by PID
 ```
 
+## How it works
+
+1. **Detection**: Iterates `/proc/[pid]/stat` for every process, checking for state `D`
+2. **Syscall identification**: Reads `/proc/[pid]/syscall` to get the active syscall number and arguments, maps it to a name via an x86-64 lookup table
+3. **Blocking fd resolution**: For fd-based syscalls (read, write, ioctl, etc.), extracts the first argument as a file descriptor and resolves it through `/proc/[pid]/fd/N`
+4. **Kernel stack**: Reads `/proc/[pid]/stack` to show the exact kernel code path where the process is stuck
+5. **Wait channel**: Reads `/proc/[pid]/wchan` to identify the kernel function the process is sleeping in
+
 ## API
 
 All functions return `0` on success, `-1` on error. Output via pointer parameters. `read_full_diagnostics()` returns `DSTATE_PROC_GONE` (1) if the process exited between detection and diagnostics. See `include/dstate.h` for struct definitions.
@@ -145,7 +173,6 @@ All functions return `0` on success, `-1` on error. Output via pointer parameter
 
 ```c
 int find_dstate_processes(dstate_process_t **results, int *count);
-int is_process_dstate(pid_t pid);
 void free_dstate_list(dstate_process_t *list);
 void print_dstate_summary(const dstate_process_t *procs, int count);
 ```
