@@ -167,3 +167,7 @@ void print_diagnostics(const process_diagnostics_t *diag);
 - **x86-64 only**: The syscall number-to-name table in `proc_reader.c` is x86-64 specific. Other architectures use different syscall numbers.
 - **TOCTOU races**: Processes can exit between detection and diagnostics. This is inherent to `/proc` and handled gracefully — vanished processes are skipped silently.
 - **Privileges**: Kernel stack traces require root or `CAP_SYS_PTRACE`. All other diagnostics work without elevated privileges.
+
+## License
+
+This project is intended for educational purposes.
