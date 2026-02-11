@@ -29,10 +29,28 @@ void test_build_proc_path_normal(void)
     printf("  PASS: build_proc_path normal\n");
 }
 
-test_build_proc_path_buffer_too_small(void)
+void test_build_proc_path_buffer_too_small(void)
 {
     char buffer[5];
     char *result = build_proc_path(buffer, sizeof(buffer), 1234, "stat");
     assert(result == NULL);
     printf("  PASS: build_proc_path buffer overflow returns NULL\n");
+}
+
+void test_is_pid_dir_valid(void)
+{
+    assert(is_pid_dir("1") == 1);
+    assert(is_pid_dir("1234") == 1);
+    assert(is_pid_dir("999") == 1);
+    printf("  PASS: is_pid_dir valid PIDs\n");
+}
+
+void test_is_pid_dir_invalid(void)
+{
+    assert(is_pid_dir("abcd") == 0);
+    assert(is_pid_dir(".") == 0);
+    assert(is_pid_dir("123abc") == 0);
+    assert(is_pid_dir("") == 0);
+    assert(is_pid_dir(NULL) == 0);
+    printf("  PASS: is_pid_dir invalid names\n");
 }
