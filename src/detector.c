@@ -7,7 +7,7 @@
 #include "../include/dstate.h"
 #include "../include/proc_utils.h"
 
-static int is_pid_dir(const char *name)
+int is_pid_dir(const char *name)
 {
     if (!name || !*name)
         return 0;
@@ -22,7 +22,7 @@ static int is_pid_dir(const char *name)
     return 1;
 }
 
-static char get_process_state(pid_t pid)
+char get_process_state(pid_t pid)
 {
     char path[64];
     char buffer[512];
