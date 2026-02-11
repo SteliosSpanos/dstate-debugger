@@ -36,6 +36,10 @@ test-pid: trap_fs dstate
 	sudo ./dstate -p $$(pgrep -o -f 'cat /tmp/fuse_mount/trap.txt')
 	@$(MAKE) --no-print-directory kill
 
+unit-test: test/unit_test.c src/proc_utils.c src/proc_reader.c src/detector.c
+	$(CC) $(CFLAGS) -o unit_test $^
+	./unit_test
+
 kill:
 	@kill -9 $$(pgrep trap_fs) 2>/dev/null; true
 	@fusermount -u /tmp/fuse_mount 2>/dev/null; true
