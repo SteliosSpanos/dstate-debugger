@@ -6,7 +6,7 @@ Written in C99 for x86-64 Linux. No runtime dependencies beyond glibc.
 
 ## Why D-state matters
 
-When a Linux process enters D-state (uninterruptible sleep), it cannot be killed — not even by `SIGKILL`. This commonly happens with FUSE filesystems when the userspace daemon deadlocks or hangs. Traditional debuggers like `gdb` rely on `PTRACE`, which also fails on D-state processes. This tool bypasses that limitation by reading directly from `/proc`.
+When a Linux process enters D-state (uninterruptible sleep), it cannot be killed (not even by `SIGKILL`). This commonly happens with FUSE filesystems when the userspace daemon deadlocks or hangs. Traditional debuggers like `gdb` rely on `PTRACE`, which also fails on D-state processes. This tool bypasses that limitation by reading directly from `/proc`.
 
 ## Project Structure
 
@@ -192,7 +192,7 @@ void print_diagnostics(const process_diagnostics_t *diag);
 ## Known Limitations
 
 - **x86-64 only**: The syscall number-to-name table in `proc_reader.c` is x86-64 specific. Other architectures use different syscall numbers.
-- **TOCTOU races**: Processes can exit between detection and diagnostics. This is inherent to `/proc` and handled gracefully — vanished processes are skipped silently.
+- **TOCTOU races**: Processes can exit between detection and diagnostics. This is inherent to `/proc` and handled gracefully. Vanished processes are skipped silently.
 - **Privileges**: Kernel stack traces require root or `CAP_SYS_PTRACE`. All other diagnostics work without elevated privileges.
 
 ## License
