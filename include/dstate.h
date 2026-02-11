@@ -54,9 +54,7 @@ typedef struct
 } process_diagnostics_t;
 
 int is_pid_dir(const char *name);
-char get_process_state(pid_t pid);
 int find_dstate_processes(dstate_process_t **results, int *count);
-int is_process_dstate(pid_t pid);
 void free_dstate_list(dstate_process_t *list);
 void print_dstate_summary(const dstate_process_t *procs, int count);
 
