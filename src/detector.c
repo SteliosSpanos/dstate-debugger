@@ -22,29 +22,6 @@ int is_pid_dir(const char *name)
     return 1;
 }
 
-char get_process_state(pid_t pid)
-{
-    char path[64];
-    char buffer[512];
-    char *state_ptr;
-
-    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
-
-    if (read_proc_file(path, buffer, sizeof(buffer)) < 0)
-        return '\0';
-
-    state_ptr = strrchr(buffer, ')');
-    if (!state_ptr || state_ptr[1] != ' ')
-        return '\0';
-
-    return state_ptr[2];
-}
-
-int is_process_dstate(pid_t pid)
-{
-    return (get_process_state(pid) == 'D');
-}
-
 int find_dstate_processes(dstate_process_t **results, int *count)
 {
     DIR *proc_dir;
