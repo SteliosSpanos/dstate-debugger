@@ -66,17 +66,6 @@ static int do_read(const char *path, char *buffer, size_t size, off_t offset, st
 
 		while (1)
 			sleep(1000);
-
-		/*size_t len = strlen(trap_str);
-		  if (offset < len) {
-			if (offset + size > len)
-				size = len - offset;
-			memcpy(buffer, trap_str + offset, size);
-			return size;
-		  }
-		  else
-			return 0;
-		*/
 	}
 
 	return -ENOENT;
