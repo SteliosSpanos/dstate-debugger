@@ -15,6 +15,7 @@ typedef struct
 {
     uint64_t start;
     uint64_t end;
+    char perms[5];
     char path[256];
 } map_entry_t;
 
