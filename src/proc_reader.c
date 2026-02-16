@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
+#include <fcntl.h>
 
 #include "../include/dstate.h"
 #include "../include/proc_utils.h"
@@ -282,6 +283,8 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 
 	read_process_maps(pid, &diag->maps);
 
+	read_user_stack(pid, diag);
+
 	return 0;
 }
 
@@ -358,6 +361,20 @@ void print_diagnostics(const process_diagnostics_t *diag)
 		const map_entry_t *e = &diag->maps.entries[i];
 		printf("   0x%lx-0x%lx  %s\n", e->start, e->end, e->path[0] ? e->path : "(anonymous)");
 	}
+
+	printf("\nUser Stack Trace:\n");
+	if (diag->user_stack.valid && diag->user_stack.count > 0)
+	{
+		for (int i = 0; i < diag->user_stack.count; ++i)
+		{
+			const user_frame_t *f = &diag->user_stack.frames[i];
+			printf("   [%d]  0x%lx  %s  (+0x%lx)\n", i, f->addr, f->region, f->addr - f->region_start);
+		}
+	}
+	else if (diag->user_stack.valid)
+		printf("  (no executable addresses found on stack)\n");
+	else
+		printf("   (requires root to read /proc/[pid]/mem)\n");
 	printf("\n");
 }
 
@@ -390,7 +407,7 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 
 		map_entry_t *e = &maps->entries[maps->count];
 
-		int parsed = sscanf(line, "%lx-%lx %4s %*x %*x:%*x %*d %255[^\n]", &e->start, &e->end, e->path);
+		int parsed = sscanf(line, "%lx-%lx %4s %*x %*x:%*x %*d %255[^\n]", &e->start, &e->end, e->perms, e->path);
 
 		if (parsed < 3)
 			continue;
@@ -402,5 +419,69 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 	}
 
 	fclose(fp);
+	return 0;
+}
+
+int read_user_stack(pid_t pid, process_diagnostics_t *diag)
+{
+	char path[64];
+	int mem_fd;
+	uint64_t sp;
+	uint64_t buffer[256];
+	ssize_t bytes_read;
+
+	diag->user_stack.count = 0;
+	diag->user_stack.valid = 0;
+
+	sp = diag->basic.stack_ptr;
+	if (sp == 0)
+		return -1;
+
+	snprintf(path, sizeof(path), "/proc/%d/mem", pid);
+
+	mem_fd = open(path, O_RDONLY);
+	if (mem_fd < 0)
+		return -1;
+
+	bytes_read = pread(mem_fd, buffer, sizeof(buffer), (off_t)sp);
+	close(mem_fd);
+
+	if (bytes_read <= 0)
+		return -1;
+
+	diag->user_stack.valid = 1;
+
+	int num_values = bytes_read / 8;
+
+	for (int i = 0; i < num_values; ++i)
+	{
+		uint64_t val = buffer[i];
+
+		for (int j = 0; j < diag->maps.count; ++j)
+		{
+			map_entry_t *e = &diag->maps.entries[j];
+
+			if (strchr(e->perms, 'x') == NULL)
+				continue;
+
+			if (val >= e->start && val < e->end)
+			{
+				if (diag->user_stack.count >= MAX_USER_FRAMES)
+					break;
+
+				user_frame_t *f = &diag->user_stack.frames[diag->user_stack.count];
+				f->addr = val;
+				f->region_start = e->start;
+
+				strncpy(f->region, e->path[0] ? e->path : "(anonymous)", sizeof(f->region) - 1);
+
+				f->region[sizeof(f->region) - 1] = '\0';
+
+				diag->user_stack.count++;
+				break;
+			}
+		}
+	}
+
 	return 0;
 }
