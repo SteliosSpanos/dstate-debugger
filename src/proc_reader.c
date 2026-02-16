@@ -374,9 +374,11 @@ void print_diagnostics(const process_diagnostics_t *diag)
 		}
 	}
 	else if (diag->user_stack.valid)
-		printf("  (no executable addresses found on stack)\n");
-	else
+		printf("   (no executable addresses found on stack)\n");
+	else if (diag->user_stack.reason == USER_STACK_ERR_PERM)
 		printf("   (requires root to read /proc/[pid]/mem)\n");
+	else
+		printf("   (process memory unavailable)\n");
 	printf("\n");
 }
 
@@ -436,22 +438,34 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 
 	diag->user_stack.count = 0;
 	diag->user_stack.valid = 0;
+	diag->user_stack.reason = 0;
 
 	sp = diag->basic.stack_ptr;
 	if (sp == 0)
+	{
+		diag->user_stack.reason = USER_STACK_ERR_UNAVAIL;
 		return -1;
+	}
 
 	snprintf(path, sizeof(path), "/proc/%d/mem", pid);
 
 	mem_fd = open(path, O_RDONLY);
 	if (mem_fd < 0)
+	{
+		diag->user_stack.reason = (errno == EACCES || errno == EPERM)
+									  ? USER_STACK_ERR_PERM
+									  : USER_STACK_ERR_UNAVAIL;
 		return -1;
+	}
 
 	bytes_read = pread(mem_fd, buffer, sizeof(buffer), (off_t)sp);
 	close(mem_fd);
 
 	if (bytes_read <= 0)
+	{
+		diag->user_stack.reason = USER_STACK_ERR_UNAVAIL;
 		return -1;
+	}
 
 	diag->user_stack.valid = 1;
 

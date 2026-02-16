@@ -5,6 +5,9 @@
 #include <stdint.h>
 
 #define DSTATE_PROC_GONE 1
+#define USER_STACK_ERR_PERM 1
+#define USER_STACK_ERR_UNAVAIL 2
+
 #define MAX_COMM_LEN 256
 #define MAX_PATH_LEN 512
 #define MAX_WCHAN_LEN 64
@@ -39,6 +42,7 @@ typedef struct
     user_frame_t frames[MAX_USER_FRAMES];
     int count;
     int valid;
+    int reason;
 } user_stack_t;
 
 typedef struct
