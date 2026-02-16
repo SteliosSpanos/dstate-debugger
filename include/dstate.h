@@ -9,6 +9,20 @@
 #define MAX_PATH_LEN 512
 #define MAX_WCHAN_LEN 64
 #define MAX_STACK_LEN 8192
+#define MAX_MAPS 256
+
+typedef struct
+{
+    uint64_t start;
+    uint64_t end;
+    char path[256];
+} map_entry_t;
+
+typedef struct
+{
+    map_entry_t entries[MAX_MAPS];
+    int count;
+} process_maps_t;
 
 typedef struct
 {
@@ -51,6 +65,7 @@ typedef struct
 
     char exe[MAX_PATH_LEN];
 
+    process_maps_t maps;
 } process_diagnostics_t;
 
 int is_pid_dir(const char *name);
@@ -65,5 +80,8 @@ int read_process_stack(pid_t pid, char *stack, size_t len);
 int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag);
 const char *syscall_name(long nr);
 void print_diagnostics(const process_diagnostics_t *diag);
+
+int read_process_maps(pid_t pid, process_maps_t *maps);
+const char *maps_find_region(const process_maps_t *maps, uint64_t addr);
 
 #endif
