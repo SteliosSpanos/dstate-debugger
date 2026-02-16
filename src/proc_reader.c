@@ -280,6 +280,8 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 		}
 	}
 
+	read_process_maps(pid, &diag->maps);
+
 	return 0;
 }
 
@@ -349,5 +351,56 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	{
 		printf("   (Cannot read - requires root or CAP_SYS_PTRACE)\n");
 	}
+
+	printf("\nMemory Regions:\n");
+	for (int i = 0; i < diag->maps.count; ++i)
+	{
+		const map_entry_t *e = &diag->maps.entries[i];
+		printf("   0x%lx-0x%lx  %s\n", e->start, e->end, e->path[0] ? e->path : "(anonymous)");
+	}
 	printf("\n");
+}
+
+const char *maps_find_region(const process_maps_t *maps, uint64_t addr)
+{
+	for (int i = 0; i < maps->count; ++i)
+	{
+		if (addr >= maps->entries[i].start && addr < maps->entries[i].end)
+			return maps->entries[i].path[0] ? maps->entries[i].path : "(anonymous)";
+	}
+	return "(unknown)";
+}
+
+int read_process_maps(pid_t pid, process_maps_t *maps)
+{
+	char path[64];
+	FILE *fp;
+	char line[512];
+
+	snprintf(path, sizeof(path), "proc/%d/maps", pid);
+
+	fp = fopen(path, "r");
+	if (!fp)
+		return -1;
+
+	while (fgets(line, sizeof(line), fp))
+	{
+		if (maps->count >= MAX_MAPS)
+			break;
+
+		map_entry_t *e = &maps->entries[maps->count];
+
+		int parsed = sscanf(line, "%lx-%lx %*s %*x %*x:%*x %*d %255[^\n]", &e->start, &e->end, e->path);
+
+		if (parsed < 2)
+			continue;
+
+		if (parsed == 2)
+			e->path[0] = '\0';
+
+		maps->count++;
+	}
+
+	fclose(fp);
+	return 0;
 }
