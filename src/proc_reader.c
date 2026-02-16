@@ -377,7 +377,7 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 	FILE *fp;
 	char line[512];
 
-	snprintf(path, sizeof(path), "proc/%d/maps", pid);
+	snprintf(path, sizeof(path), "/proc/%d/maps", pid);
 
 	fp = fopen(path, "r");
 	if (!fp)
