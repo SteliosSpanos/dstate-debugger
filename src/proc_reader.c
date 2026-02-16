@@ -394,6 +394,8 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 	FILE *fp;
 	char line[512];
 
+	maps->count = 0;
+
 	snprintf(path, sizeof(path), "/proc/%d/maps", pid);
 
 	fp = fopen(path, "r");
@@ -453,7 +455,7 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 
 	int num_values = bytes_read / 8;
 
-	for (int i = 0; i < num_values; ++i)
+	for (int i = 0; i < num_values && diag->user_stack.count < MAX_USER_FRAMES; ++i)
 	{
 		uint64_t val = buffer[i];
 
@@ -466,9 +468,6 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 
 			if (val >= e->start && val < e->end)
 			{
-				if (diag->user_stack.count >= MAX_USER_FRAMES)
-					break;
-
 				user_frame_t *f = &diag->user_stack.frames[diag->user_stack.count];
 				f->addr = val;
 				f->region_start = e->start;
