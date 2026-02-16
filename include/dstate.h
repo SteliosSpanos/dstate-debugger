@@ -30,6 +30,8 @@ typedef struct
     uint64_t addr;
     char region[256];
     uint64_t region_start;
+    char function[256];
+    char source[256];
 } user_frame_t;
 
 typedef struct
@@ -101,5 +103,8 @@ void print_diagnostics(const process_diagnostics_t *diag);
 int read_process_maps(pid_t pid, process_maps_t *maps);
 const char *maps_find_region(const process_maps_t *maps, uint64_t addr);
 int read_user_stack(pid_t pid, process_diagnostics_t *diag);
+void resolve_symbol(const char *binary_path, uint64_t offset,
+                    char *func_out, size_t func_len,
+                    char *src_out, size_t src_len);
 
 #endif
