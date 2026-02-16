@@ -390,12 +390,12 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 
 		map_entry_t *e = &maps->entries[maps->count];
 
-		int parsed = sscanf(line, "%lx-%lx %*s %*x %*x:%*x %*d %255[^\n]", &e->start, &e->end, e->path);
+		int parsed = sscanf(line, "%lx-%lx %4s %*x %*x:%*x %*d %255[^\n]", &e->start, &e->end, e->path);
 
-		if (parsed < 2)
+		if (parsed < 3)
 			continue;
 
-		if (parsed == 2)
+		if (parsed == 3)
 			e->path[0] = '\0';
 
 		maps->count++;
