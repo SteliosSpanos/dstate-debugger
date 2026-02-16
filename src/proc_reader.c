@@ -368,7 +368,9 @@ void print_diagnostics(const process_diagnostics_t *diag)
 		for (int i = 0; i < diag->user_stack.count; ++i)
 		{
 			const user_frame_t *f = &diag->user_stack.frames[i];
-			printf("   [%d]  0x%lx  %s  (+0x%lx)\n", i, f->addr, f->region, f->addr - f->region_start);
+			printf("   [%d]  0x%lx  %s\n", i, f->addr, f->region);
+			printf("         function: %s\n", f->function);
+			printf("         source: %s  (+0x%lx)\n", f->source, f->addr - f->region_start);
 		}
 	}
 	else if (diag->user_stack.valid)
@@ -476,6 +478,20 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 
 				f->region[sizeof(f->region) - 1] = '\0';
 
+				if (e->path[0] == '/')
+				{
+					resolve_symbol(e->path, val - e->start,
+								   f->function, sizeof(f->function),
+								   f->source, sizeof(f->source));
+				}
+				else
+				{
+					strncpy(f->function, "??", sizeof(f->function) - 1);
+					strncpy(f->source, "??:0", sizeof(f->source) - 1);
+					f->function[sizeof(f->function) - 1] = '\0';
+					f->source[sizeof(f->source) - 1] = '\0';
+				}
+
 				diag->user_stack.count++;
 				break;
 			}
@@ -483,4 +499,40 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 	}
 
 	return 0;
+}
+
+void resolve_symbol(const char *binary_path, uint64_t offset,
+					char *func_out, size_t func_len,
+					char *src_out, size_t src_len)
+{
+	char cmd[512];
+	FILE *fp;
+	char line[256];
+
+	strncpy(func_out, "??", func_len - 1);
+	strncpy(src_out, "??:0", src_len - 1);
+	func_out[func_len - 1] = '\0';
+	src_out[src_len - 1] = '\0';
+
+	snprintf(cmd, sizeof(cmd), "addr2line -e %s -f -C 0x%lx 2>/dev/null", binary_path, offset);
+
+	fp = popen(cmd, "r");
+	if (!fp)
+		return;
+
+	if (fgets(line, sizeof(line), fp))
+	{
+		line[strcspn(line, "\n")] = '\0';
+		strncpy(func_out, line, func_len - 1);
+		func_out[func_len - 1] = '\0';
+	}
+
+	if (fgets(line, sizeof(line), fp))
+	{
+		line[strcspn(line, "\n")] = '\0';
+		strncpy(src_out, line, src_len - 1);
+		src_out[src_len - 1] = '\0';
+	}
+
+	pclose(fp);
 }
