@@ -10,7 +10,7 @@
 #define MAX_WCHAN_LEN 64
 #define MAX_STACK_LEN 8192
 #define MAX_MAPS 256
-
+#define MAX_USER_FRAMES 32
 typedef struct
 {
     uint64_t start;
@@ -24,6 +24,20 @@ typedef struct
     map_entry_t entries[MAX_MAPS];
     int count;
 } process_maps_t;
+
+typedef struct
+{
+    uint64_t addr;
+    char region[256];
+    uint64_t region_start;
+} user_frame_t;
+
+typedef struct
+{
+    user_frame_t frames[MAX_USER_FRAMES];
+    int count;
+    int valid;
+} user_stack_t;
 
 typedef struct
 {
@@ -67,6 +81,8 @@ typedef struct
     char exe[MAX_PATH_LEN];
 
     process_maps_t maps;
+
+    user_stack_t user_stack;
 } process_diagnostics_t;
 
 int is_pid_dir(const char *name);
@@ -84,5 +100,6 @@ void print_diagnostics(const process_diagnostics_t *diag);
 
 int read_process_maps(pid_t pid, process_maps_t *maps);
 const char *maps_find_region(const process_maps_t *maps, uint64_t addr);
+int read_user_stack(pid_t pid, process_diagnostics_t *diag);
 
 #endif
