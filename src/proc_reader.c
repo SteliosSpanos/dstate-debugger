@@ -4,6 +4,8 @@
 #include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 
 #include "../include/dstate.h"
 #include "../include/proc_utils.h"
@@ -44,6 +46,8 @@ static const char *syscall_names[] = {
 	[60] = "exit",
 	[61] = "wait4",
 	[62] = "kill",
+	[72] = "fcntl",
+	[73] = "flock",
 	[78] = "getdents",
 	[79] = "getcwd",
 	[80] = "chdir",
@@ -296,6 +300,8 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 
 	read_process_maps(pid, &diag->maps);
 
+	read_lock_conflict(pid, diag);
+
 	read_user_stack(pid, diag);
 
 	return 0;
@@ -351,6 +357,21 @@ void print_diagnostics(const process_diagnostics_t *diag)
 		printf("\nBlocking File Descriptor:\n");
 		printf("   FD:        %d\n", diag->blocking_fd);
 		printf("   Path:      %s\n", diag->blocking_path[0] ? diag->blocking_path : "(unknown)");
+	}
+
+	if (diag->lock_conflict.found)
+	{
+		char holder_comm[MAX_COMM_LEN] = "(unknown)";
+		char holder_path[64];
+		snprintf(holder_path, sizeof(holder_path), "/proc/%d/comm",
+				 diag->lock_conflict.holder_pid);
+		read_proc_line(holder_path, holder_comm, sizeof(holder_comm));
+
+		printf("\nLock Conflict:\n");
+		printf("   Waiting for: %s lock on %s\n",
+			   diag->lock_conflict.access,
+			   diag->lock_conflict.path[0] ? diag->lock_conflict.path : "(unknown)");
+		printf("   Held by PID: %d (%s)\n", diag->lock_conflict.holder_pid, holder_comm);
 	}
 
 	printf("\nMemory Usage:\n");
@@ -575,4 +596,61 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
 	}
 
 	pclose(fp);
+}
+
+int read_lock_conflict(pid_t pid, process_diagnostics_t *diag)
+{
+	long nr = diag->basic.syscall_nr;
+
+	if (nr != 72 && nr != 73)
+		return -1;
+
+	int fd = (int)diag->basic.syscall_args[0];
+	char fd_link[64];
+	char file_path[MAX_PATH_LEN];
+
+	snprintf(fd_link, sizeof(fd_link), "/proc/%d/fd/%d", pid, fd);
+	if (read_proc_link(fd_link, file_path, sizeof(file_path)) < 0)
+		return -1;
+
+	struct stat st;
+	if (stat(file_path, &st) < 0)
+		return -1;
+
+	unsigned int target_major = major(st.st_dev);
+	unsigned int target_minor = minor(st.st_dev);
+	unsigned long target_inode = (unsigned long)st.st_ino;
+
+	FILE *fp = fopen("/proc/locks", "r");
+	if (!fp)
+		return -1;
+
+	char line[256];
+	while (fgets(line, sizeof(line), fp))
+	{
+		int lock_num;
+		char lock_type[16], advisory[16], access[16];
+		pid_t holder_pid;
+		unsigned int lmajor, lminor;
+		unsigned long linode;
+
+		if (sscanf(line, "%d: %15s %15s %15s %d %x:%x:%lx", &lock_num, lock_type,
+				   advisory, access, &holder_pid, &lmajor, &lminor, &linode) < 8)
+			continue;
+
+		if (lmajor == target_major && lminor == target_minor && linode == target_inode && holder_pid != pid)
+		{
+			diag->lock_conflict.found = 1;
+			diag->lock_conflict.holder_pid = holder_pid;
+			strncpy(diag->lock_conflict.lock_type, lock_type, sizeof(diag->lock_conflict.lock_type) - 1);
+			strncpy(diag->lock_conflict.access, access, sizeof(diag->lock_conflict.access) - 1);
+			strncpy(diag->lock_conflict.path, file_path, sizeof(diag->lock_conflict.path) - 1);
+
+			fclose(fp);
+			return 0;
+		}
+	}
+
+	fclose(fp);
+	return -1;
 }
