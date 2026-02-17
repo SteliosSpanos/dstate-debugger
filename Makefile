@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -std=c99 -D_GNU_SOURCE -Wall -Wextra
 
-SRCS = src/detector.c src/proc_reader.c src/proc_utils.c
+SRCS = src/detector.c src/proc_reader.c src/proc_utils.c src/ptrace_reader.c
 
 all: dstate
 
@@ -36,7 +36,7 @@ test-pid: trap_fs dstate
 	sudo ./dstate -p $$(pgrep -o -f 'cat /tmp/fuse_mount/trap.txt')
 	@$(MAKE) --no-print-directory kill
 
-unit-test: test/unit_test.c src/proc_utils.c src/proc_reader.c src/detector.c
+unit-test: test/unit_test.c src/proc_utils.c src/proc_reader.c src/detector.c src/ptrace_reader.c
 	$(CC) $(CFLAGS) -o unit_test $^
 	./unit_test
 
