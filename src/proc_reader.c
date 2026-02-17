@@ -106,11 +106,11 @@ int read_process_stat(pid_t pid, dstate_process_t *proc)
 		return -1;
 
 	int parsed = sscanf(ptr,
-						"%c %d %*d %*d %*d %*d %*u "
-						"%*u %*u %*u %*u "
-						"%lu %lu %*d %*d "
-						"%*d %*d %d "
-						"%*d %llu "
+						"%c %d %*d %*d %*d %*d %lu "
+						"%*lu %*lu %*lu %*lu "
+						"%lu %lu %*ld %*ld "
+						"%*ld %*ld %d "
+						"%*ld %llu "
 						"%lu %lu",
 						&proc->state,
 						&proc->ppid,
