@@ -90,6 +90,11 @@ typedef struct
     process_maps_t maps;
 
     user_stack_t user_stack;
+
+    int ptrace_valid;
+    uint64_t ptrace_rip;
+    uint64_t ptrace_rsp;
+    uint64_t ptrace_rbp;
 } process_diagnostics_t;
 
 int is_pid_dir(const char *name);
@@ -111,5 +116,7 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag);
 void resolve_symbol(const char *binary_path, uint64_t offset,
                     char *func_out, size_t func_len,
                     char *src_out, size_t src_len);
+
+int read_registers_ptrace(pid_t pid, uint64_t *rip, uint64_t *rsp, uint64_t *rbp);
 
 #endif
