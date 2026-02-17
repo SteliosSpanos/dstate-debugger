@@ -50,13 +50,13 @@ int find_dstate_processes(dstate_process_t **results, int *count)
         pid_t pid;
 
         if (!is_pid_dir(entry->d_name))
-        {
-            char *endptr;
-            long val = strtol(entry->d_name, &endptr, 10);
-            if (*endptr != '\0' || val <= 0 || val > INT_MAX)
-                continue;
-            pid = (pid_t)val;
-        }
+            continue;
+
+        char *endptr;
+        long val = strtol(entry->d_name, &endptr, 10);
+        if (val <= 0 || val > INT_MAX)
+            continue;
+        pid = (pid_t)val;
 
         dstate_process_t tmp;
         memset(&tmp, 0, sizeof(tmp));
