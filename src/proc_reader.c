@@ -106,11 +106,11 @@ int read_process_stat(pid_t pid, dstate_process_t *proc)
 		return -1;
 
 	int parsed = sscanf(ptr,
-						"%c %d %*d %*d %*d %*d %lu "
-						"%*lu %*lu %*lu %*lu "
-						"%lu %lu %*ld %*ld "
-						"%*ld %*ld %d "
-						"%*ld %llu "
+						"%c %d %*d %*d %*d %*d %*u "
+						"%*u %*u %*u %*u "
+						"%lu %lu %*d %*d "
+						"%*d %*d %d "
+						"%*d %llu "
 						"%lu %lu",
 						&proc->state,
 						&proc->ppid,
@@ -268,8 +268,9 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 		if (nr == 0 || nr == 1 ||
 			nr == 16 || nr == 17 ||
 			nr == 18 || nr == 19 ||
-			nr == 20 || nr == 44 ||
-			nr == 45)
+			nr == 20 || nr == 42 ||
+			nr == 43 || nr == 44 ||
+			nr == 45 || nr == 288)
 			target_fd = (int)diag->basic.syscall_args[0];
 
 		if (target_fd >= 0)
@@ -377,6 +378,8 @@ void print_diagnostics(const process_diagnostics_t *diag)
 		printf("   (no executable addresses found on stack)\n");
 	else if (diag->user_stack.reason == USER_STACK_ERR_PERM)
 		printf("   (requires root to read /proc/[pid]/mem)\n");
+	else if (diag->user_stack.reason == USER_STACK_ERR_NO_SP)
+		printf("   (no stack pointer - process was not in a syscall when sampled)\n");
 	else
 		printf("   (process memory unavailable)\n");
 	printf("\n");
@@ -443,7 +446,7 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 	sp = diag->basic.stack_ptr;
 	if (sp == 0)
 	{
-		diag->user_stack.reason = USER_STACK_ERR_UNAVAIL;
+		diag->user_stack.reason = USER_STACK_ERR_NO_SP;
 		return -1;
 	}
 
@@ -519,7 +522,7 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
 					char *func_out, size_t func_len,
 					char *src_out, size_t src_len)
 {
-	char cmd[512];
+	char cmd[MAX_PATH_LEN + 64];
 	FILE *fp;
 	char line[256];
 
@@ -528,7 +531,10 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
 	func_out[func_len - 1] = '\0';
 	src_out[src_len - 1] = '\0';
 
-	snprintf(cmd, sizeof(cmd), "addr2line -e %s -f -C 0x%lx 2>/dev/null", binary_path, offset);
+	if (strchr(binary_path, '\'') != NULL)
+		return;
+
+	snprintf(cmd, sizeof(cmd), "addr2line -e '%s' -f -C 0x%lx 2>/dev/null", binary_path, offset);
 
 	fp = popen(cmd, "r");
 	if (!fp)
