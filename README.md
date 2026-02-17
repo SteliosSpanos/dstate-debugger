@@ -1,12 +1,22 @@
 # dstate-debugger
 
-Linux debugging tool that detects and diagnoses processes stuck in D-state (uninterruptible sleep). Scans `/proc` to identify blocked processes, reads kernel stack traces, maps syscalls to names, and reports which file descriptor they're blocked on.
+## Overview
+
+A Linux debugging tool that detects and diagnoses processes stuck in D-state (uninterruptible sleep). It scans `/proc` to find blocked processes, reads their kernel stack traces, identifies what syscall they are waiting in, and reports the exact file path they are blocked on. It also unwinds the user-space call stack by reading raw process memory.
 
 Written in C99 for x86-64 Linux. No runtime dependencies beyond glibc.
 
-## Why D-state matters
+---
 
-When a Linux process enters D-state (uninterruptible sleep), it cannot be killed (not even by `SIGKILL`). This commonly happens with FUSE filesystems when the userspace daemon deadlocks or hangs. Traditional debuggers like `gdb` rely on `PTRACE`, which also fails on D-state processes. This tool bypasses that limitation by reading directly from `/proc`.
+## Why does D-state matter?
+
+When a Linux process enters D-state, the kernel has suspended it inside a system call. The process is waiting for something (usually I/O) and it cannot respond to signals until that wait completes. Not even `SIGKILL` works.
+
+This creates a diagnostic problem. Traditional debuggers like `gdb` attach to processes using `ptrace`. `ptrace` requires delivering `SIGSTOP` to the target process first. A D-state process cannot receive signals. So `ptrace` fails entirely.
+
+This tool works around that limitation. It reads everything it needs from `/proc`, which is a virtual filesystem the kernel maintains for exactly this purpose. No signals, no ptrace, no process cooperation required.
+
+---
 
 ## Project Structure
 
@@ -27,37 +37,54 @@ dstate-debugger/
     └── trap_fs.c          FUSE filesystem that blocks reads forever
 ```
 
+---
+
 ## Architecture
 
-Three layers, all reading from `/proc`:
+The tool is built in three layers. Each layer depends only on the one below it.
 
-| Layer       | File                | Purpose                                                                                                                          |
-| ----------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Utilities   | `src/proc_utils.c`  | Low-level `/proc` I/O: reading files, symlinks, building `/proc/[pid]/...` paths                                                 |
-| Detection   | `src/detector.c`    | Scans `/proc` for D-state processes, returns dynamically-allocated arrays                                                        |
-| Diagnostics | `src/proc_reader.c` | Per-PID analysis: stat, wchan, syscall, kernel stack traces, blocking fd detection. Contains x86-64 syscall number-to-name table |
+**Layer 1: `src/proc_utils.c`**
 
-Headers: `include/dstate.h` (structs + API), `include/proc_utils.h` (utility interface).
+All raw `/proc` file I/O lives here: opening files, reading their contents, following symlinks, and constructing paths like `/proc/1234/stat`. Every other module goes through this layer. Nothing else opens `/proc` files directly.
+
+**Layer 2: `src/detector.c`**
+
+Scans `/proc` to find processes in D-state. Opens the `/proc` directory, iterates every numeric entry (each one is a PID), reads its `stat` file, and checks the state field. Returns a dynamically-allocated array that doubles its capacity whenever it fills. Entry point: `find_dstate_processes()`.
+
+**Layer 3: `src/proc_reader.c`**
+
+Reads deep diagnostics for a single PID: stat, wchan, syscall, kernel stack, maps, and process memory. Contains the x86-64 syscall-number-to-name table. Entry point: `read_full_diagnostics()`.
+
+Headers in `include/dstate.h` define all shared data structures and function declarations. `include/proc_utils.h` exposes the utility interface.
+
+---
 
 ## Dependencies
 
-- **Build/runtime**: None beyond glibc
-- **Testing only**: `libfuse-dev` (for the FUSE test filesystem)
+- **Build and runtime**: glibc only. Nothing else.
+- **Testing only**: `libfuse-dev` is required to build the FUSE test filesystem.
 
 ```bash
 sudo apt-get install libfuse-dev
 ```
 
+---
+
 ## Build
 
 ```bash
-make            # builds dstate
+make            # builds dstate (main tool)
 make unit-test  # builds and runs unit tests
 make monitor    # builds test monitor
 make trap_fs    # builds FUSE test filesystem (requires libfuse-dev)
+make test       # full test: trap_fs + monitor + dstate (requires sudo)
+make test-pid   # test the -p flag: trap a process, diagnose by PID
+make kill       # kill trap_fs and unmount FUSE
+make clean      # remove binaries and unmount FUSE
 make help       # show all targets and usage
-make clean      # removes binaries, unmounts FUSE
 ```
+
+---
 
 ## Usage
 
@@ -67,9 +94,65 @@ sudo ./dstate -p PID     # diagnose a specific process
 ./dstate -h              # show help
 ```
 
-Requires root or `CAP_SYS_PTRACE` to read `/proc/[pid]/stack`. Without privileges, all other diagnostics still work but kernel stack traces will be unavailable.
+Root or `CAP_SYS_PTRACE` is required for two things: reading `/proc/[pid]/stack` (kernel stack trace) and reading `/proc/[pid]/mem` (user stack unwinding). All other diagnostics, syscall identification, fd resolution, wchan, memory map, basic stat, work without elevated privileges.
 
-### Sample output
+---
+
+## How It Works
+
+Here is what happens at each step, and why each step is necessary.
+
+### Step 1: Detection
+
+The tool opens `/proc` and iterates every directory whose name is a number. Each one is a running process. It reads `/proc/[pid]/stat` and checks the state field (the third field, after PID and command name). A value of `D` means the process is in uninterruptible sleep.
+
+### Step 2: Syscall identification
+
+The tool reads `/proc/[pid]/syscall`. This file contains the current syscall number, six argument registers, the stack pointer, and the instruction pointer, all in one line.
+
+The syscall number is mapped to a name using a static table specific to x86-64 (for example, nr=0 is `read`, nr=1 is `write`). If the number is not in the table, the tool falls back to `syscall_N` as a placeholder.
+
+This tells you exactly what the kernel was doing when the process froze.
+
+### Step 3: Blocking file descriptor resolution
+
+Some syscalls operate on a file descriptor: `read`, `write`, `ioctl`, `pread64`, `pwrite64`, `readv`, `writev`, `connect`, `accept`, `accept4`, `sendto`, `recvfrom`. For these, the first argument (args[0]) is the fd number.
+
+The tool resolves that fd by reading the symbolic link `/proc/[pid]/fd/N`. This symbolic link points to the actual file, socket, or device the process has open. This is how the tool can tell you "blocked on `/tmp/fuse_mount/trap.txt`" instead of just "fd 3".
+
+### Step 4: Kernel stack trace
+
+The tool reads `/proc/[pid]/stack`. This file contains the live kernel call stack for the process: the exact chain of kernel functions that led to the current wait. It is the most direct answer to "what is the kernel doing right now?"
+
+Reading this file requires root or `CAP_SYS_PTRACE`. Without privileges, the tool prints a message explaining why this section is unavailable.
+
+### Step 5: Wait channel
+
+The tool reads `/proc/[pid]/wchan`. This is a single string: the name of the kernel function where the process is currently sleeping. It is a one-line summary of the kernel stack.
+
+For example, `request_wait_answer` identifies FUSE request waiting. `nfs_wait_bit_killable` identifies NFS I/O waiting.
+
+### Step 6: Memory map parsing
+
+The tool reads `/proc/[pid]/maps`. This file lists every virtual memory region the process has: start address, end address, permissions (`rwxp`), and the backing file (or anonymous if there is none).
+
+The tool parses this into a table of `map_entry_t` structs. This table is used in the next step to identify which memory addresses belong to executable code.
+
+### Step 7: User stack unwinding
+
+The tool opens `/proc/[pid]/mem` and reads 2048 bytes starting from the stack pointer captured in step 2. It then scans every 8-byte word in that buffer. If a word's value falls inside an executable region from the maps table (a region with `x` in its permissions), it is treated as a candidate return address.
+
+This is a heuristic. The stack is a contiguous region of memory, and return addresses are pushed onto it by the CPU's `call` instruction. Scanning for values that land in executable regions is a reasonable approximation of stack unwinding, but it is not perfect. It can include false positives (values that happen to look like code pointers) and miss frames stored in registers.
+
+### Step 8: Symbol resolution
+
+For each candidate return address that points to a mapped binary file (a path starting with `/`), the tool calls `addr2line` to translate the file offset to a function name and source file:line.
+
+This requires the binary to have been compiled with debug information (`-g`). Without it, `addr2line` returns `??` and `??:0`, which the tool displays as is. Paths containing single quotes are skipped to avoid shell injection in the `popen` call.
+
+---
+
+## Sample Output
 
 ```
 === D-State Processes Found: 1 ===
@@ -136,55 +219,52 @@ User Stack Trace:
          source: cat.c:140  (+0xa32)
 ```
 
+Reading this output top to bottom tells a complete story. The process `cat` is in D-state, sleeping in `request_wait_answer` (a FUSE kernel function). It is stuck in a `read` syscall on fd 3, which resolves to `/tmp/fuse_mount/trap.txt`. The kernel stack confirms the path from the FUSE page fault handler through the VFS layer. The user stack shows it entered the kernel via `__GI___read` in libc, called from `main`.
+
+---
+
 ## Testing
 
-### Unit tests
+### Unit Tests
 
-Tests for pure logic functions that don't require `/proc` or root privileges: syscall name lookup, `/proc` path construction, PID directory validation.
+These tests cover pure logic: syscall name lookup, `/proc` path construction, PID directory name validation. No root required, no `/proc` access.
 
 ```bash
-make unit-test    # builds and runs unit tests
+make unit-test
 ```
 
-### Integration tests
+### Integration Tests
 
-Manual testing uses a FUSE filesystem (`trap_fs`) that blocks reads forever, putting any process that touches it into D-state.
+The integration test uses `trap_fs`, a FUSE filesystem that accepts reads but never responds to them. Any process that tries to read from it immediately enters D-state.
+
+**Manual setup (three terminals):**
 
 ```bash
-# Terminal 1: start FUSE daemon that blocks reads forever
+# Terminal 1: start the FUSE daemon that blocks reads forever
 ./trap_fs /tmp/fuse_mount
 
-# Terminal 2: fork a child that reads from FUSE mount, monitor state
+# Terminal 2: fork a child that reads from the mount, watch it enter D-state
 ./monitor
 
-# Terminal 3: run dstate as root
+# Terminal 3: run the tool
 sudo ./dstate
 
-# Kill FUSE daemon to release blocked processes
-# (SIGTERM/SIGKILL on D-state processes has no effect)
+# To release: kill the FUSE daemon
+# (SIGTERM and SIGKILL have no effect on D-state processes themselves)
 ```
 
-Or run everything at once:
+**Automated:**
 
 ```bash
-make test       # full test: trap_fs + monitor + dstate (requires sudo)
-make test-pid   # test the -p flag: trap a process, diagnose by PID
+make test       # runs trap_fs + monitor + dstate together (requires sudo)
+make test-pid   # same, but uses -p to diagnose by a specific PID
 ```
 
-## How it works
+---
 
-1. **Detection**: Iterates `/proc/[pid]/stat` for every process, checking for state `D`
-2. **Syscall identification**: Reads `/proc/[pid]/syscall` to get the active syscall number and arguments, maps it to a name via an x86-64 lookup table
-3. **Blocking fd resolution**: For fd-based syscalls (read, write, ioctl, etc.), extracts the first argument as a file descriptor and resolves it through `/proc/[pid]/fd/N`
-4. **Kernel stack**: Reads `/proc/[pid]/stack` to show the exact kernel code path where the process is stuck
-5. **Wait channel**: Reads `/proc/[pid]/wchan` to identify the kernel function the process is sleeping in
-6. **Memory map parsing**: Reads `/proc/[pid]/maps` to build a table of virtual address ranges, their permissions, and backing files
-7. **User stack unwinding**: Opens `/proc/[pid]/mem` to read raw stack memory, then scans each 8-byte word against the maps table to identify candidate return addresses in executable regions
-8. **Symbol resolution**: For each return address pointing to a mapped binary, invokes `addr2line` to resolve the file offset to a demangled function name and source location
+## API Reference
 
-## API
-
-All functions return `0` on success, `-1` on error. Output via pointer parameters. `read_full_diagnostics()` returns `DSTATE_PROC_GONE` (1) if the process exited between detection and diagnostics. See `include/dstate.h` for struct definitions.
+All functions return `0` on success and `-1` on error. Output is written through pointer parameters. `read_full_diagnostics()` returns `DSTATE_PROC_GONE` (`1`) if the process exited between the initial detection scan and the diagnostic read. This is a normal condition — the caller should skip the process. See `include/dstate.h` for all struct definitions.
 
 ### Detection
 
@@ -193,6 +273,8 @@ int find_dstate_processes(dstate_process_t **results, int *count);
 void free_dstate_list(dstate_process_t *list);
 void print_dstate_summary(const dstate_process_t *procs, int count);
 ```
+
+`find_dstate_processes` allocates the result array internally and writes the pointer to `*results`. Always free it with `free_dstate_list` when done.
 
 ### Diagnostics
 
@@ -206,7 +288,7 @@ const char *syscall_name(long nr);
 void print_diagnostics(const process_diagnostics_t *diag);
 ```
 
-### Memory Maps & User Stack
+### Memory Maps and User Stack
 
 ```c
 int read_process_maps(pid_t pid, process_maps_t *maps);
@@ -217,16 +299,32 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
                     char *src_out, size_t src_len);
 ```
 
-`read_user_stack` sets `diag->user_stack.valid` on success. On failure, `diag->user_stack.reason` is set to `USER_STACK_ERR_PERM` (no permission to open `/proc/[pid]/mem`) or `USER_STACK_ERR_UNAVAIL` (stack pointer unavailable or memory unreadable). `resolve_symbol` falls back to `"??"` / `"??:0"` if `addr2line` is not available or the binary has no debug info.
+On failure, `diag->user_stack.reason` is set to one of:
+
+| Constant                 | Value | Meaning                                                                                                           |
+| ------------------------ | ----- | ----------------------------------------------------------------------------------------------------------------- |
+| `USER_STACK_ERR_PERM`    | 1     | Permission denied opening `/proc/[pid]/mem`. Run as root or with `CAP_SYS_PTRACE`.                                |
+| `USER_STACK_ERR_UNAVAIL` | 2     | Memory unreadable or the process vanished between steps.                                                          |
+| `USER_STACK_ERR_NO_SP`   | 3     | Stack pointer is zero. The process was not in a syscall when sampled, so there is no starting point for the scan. |
+
+---
 
 ## Known Limitations
 
-- **x86-64 only**: The syscall number-to-name table in `proc_reader.c` is x86-64 specific. Other architectures use different syscall numbers.
-- **TOCTOU races**: Processes can exit between detection and diagnostics. This is inherent to `/proc` and handled gracefully. Vanished processes are skipped silently.
-- **Privileges**: Kernel stack traces and user stack unwinding require root or `CAP_SYS_PTRACE`. All other diagnostics work without elevated privileges.
-- **Symbol resolution**: `resolve_symbol` shells out to `addr2line`. Function names and source locations are only available for binaries compiled with debug info (`-g`). Without `addr2line` or debug info, frames are shown as `??` / `??:0`.
-- **User stack heuristic**: The user stack unwinding scans raw stack memory for values that fall in executable regions. This can produce false positives (non-return-address values that happen to point into code) and false negatives (frames stored in registers rather than on the stack).
+**x86-64 only.** The syscall number table in `proc_reader.c` is specific to x86-64. On ARM64 or RISC-V, syscall numbers are different. The tool compiles on other architectures but syscall names will be wrong.
+
+**TOCTOU races.** Between the detection scan and the diagnostic read, a process can exit. This is unavoidable with `/proc`. The tool handles it gracefully: `read_full_diagnostics` returns `DSTATE_PROC_GONE` and the process is skipped.
+
+**Privileges required for kernel stack and user stack.** Reading `/proc/[pid]/stack` and `/proc/[pid]/mem` both require root or `CAP_SYS_PTRACE`. The kernel enforces this. All other diagnostics are available without elevated privileges.
+
+**Symbol resolution requires debug info.** `resolve_symbol` calls `addr2line` for each frame. Function names and source lines only appear for binaries compiled with `-g`. Without debug information, every frame shows as `??` / `??:0`. Paths containing a single quote character are skipped entirely to avoid shell injection.
+
+**User stack is a heuristic.** Scanning raw stack memory for values that fall in executable regions is an approximation, not proper stack unwinding. It can include false positives (arbitrary values that happen to point into code) and miss frames that the compiler stored in registers rather than on the stack.
+
+**ptrace cannot attach to D-state processes.** This is why the tool reads `/proc` instead of using a debugger-style approach. `SIGSTOP` cannot be delivered to a process in uninterruptible sleep, so `ptrace(PTRACE_ATTACH, ...)` blocks indefinitely.
+
+---
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [MIT LICENSE](LICENSE).
