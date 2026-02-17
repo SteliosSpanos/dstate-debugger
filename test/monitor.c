@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 
 char analyze_child(pid_t pid)
 {
@@ -105,7 +106,11 @@ int main(void)
 		}
 		else
 		{
-			printf("\n[Monitor]: Process exited (state: %c)\n", state);
+			if (state == '\0')
+				printf("\n[Monitor]: Process has already exited.\n");
+			else
+				printf("\n[Monitor]: Process exited (state: %c)\n", state);
+			waitpid(pid, NULL, 0);
 		}
 	}
 
