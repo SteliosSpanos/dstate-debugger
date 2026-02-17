@@ -237,6 +237,18 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 
 	read_process_syscall(pid, &diag->basic);
 
+	if (diag->basic.state == 'S' || diag->basic.state == 'T')
+	{
+		uint64_t rip, rsp, rbp;
+		if (read_registers_ptrace(pid, &rip, &rsp, &rbp) == 0)
+		{
+			diag->ptrace_valid = 1;
+			diag->ptrace_rip = rip;
+			diag->ptrace_rsp = rsp;
+			diag->ptrace_rbp = rbp;
+		}
+	}
+
 	if (read_process_stack(pid, diag->kernel_stack, sizeof(diag->kernel_stack)) == 0)
 		diag->kernel_stack_valid = 1;
 
@@ -326,6 +338,14 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	else
 		printf("   (Not currently in a system call)\n");
 
+	if (diag->ptrace_valid)
+	{
+		printf("\nRegisters (via ptrace):\n");
+		printf("   RIP: 0x%lx\n", diag->ptrace_rip);
+		printf("   RSP: 0x%lx\n", diag->ptrace_rsp);
+		printf("   RBP: 0x%lx\n", diag->ptrace_rbp);
+	}
+
 	if (diag->blocking_fd >= 0)
 	{
 		printf("\nBlocking File Descriptor:\n");
@@ -363,7 +383,7 @@ void print_diagnostics(const process_diagnostics_t *diag)
 		printf("   0x%lx-0x%lx  %s\n", e->start, e->end, e->path[0] ? e->path : "(anonymous)");
 	}
 
-	printf("\nUser Stack Trace:\n");
+	printf("\nUser Stack Trace (%s):\n", diag->ptrace_valid ? "ptrace RSP" : "syscall SP");
 	if (diag->user_stack.valid && diag->user_stack.count > 0)
 	{
 		for (int i = 0; i < diag->user_stack.count; ++i)
@@ -443,7 +463,7 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 	diag->user_stack.valid = 0;
 	diag->user_stack.reason = 0;
 
-	sp = diag->basic.stack_ptr;
+	sp = diag->ptrace_valid ? diag->ptrace_rsp : diag->basic.stack_ptr;
 	if (sp == 0)
 	{
 		diag->user_stack.reason = USER_STACK_ERR_NO_SP;
