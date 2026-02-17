@@ -48,6 +48,15 @@ typedef struct
 
 typedef struct
 {
+    int found;
+    pid_t holder_pid;
+    char lock_type[16];
+    char access[16];
+    char path[MAX_PATH_LEN];
+} lock_conflict_t;
+
+typedef struct
+{
     pid_t pid;
     pid_t ppid;
 
@@ -95,6 +104,8 @@ typedef struct
     uint64_t ptrace_rip;
     uint64_t ptrace_rsp;
     uint64_t ptrace_rbp;
+
+    lock_conflict_t lock_conflict;
 } process_diagnostics_t;
 
 int is_pid_dir(const char *name);
@@ -118,5 +129,7 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
                     char *src_out, size_t src_len);
 
 int read_registers_ptrace(pid_t pid, uint64_t *rip, uint64_t *rsp, uint64_t *rbp);
+
+int read_lock_conflict(pid_t pid, process_diagnostics_t *diag);
 
 #endif
