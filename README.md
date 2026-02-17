@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Linux debugging tool that detects and diagnoses processes stuck in D-state (uninterruptible sleep). It scans `/proc` to find blocked processes, reads their kernel stack traces, identifies what syscall they are waiting in, and reports the exact file path they are blocked on. It also unwinds the user-space call stack by reading raw process memory.
+A Linux debugging tool that detects and diagnoses processes stuck in D-state (uninterruptible sleep). It scans `/proc` to find blocked processes, reads their kernel stack traces, identifies what syscall they are waiting in, and reports the exact file path they are blocked on. For S-state and T-state processes it supplements `/proc` with live CPU register reads via ptrace. It also detects file lock conflicts, identifying which other process holds the lock that is blocking the target. It unwinds the user-space call stack by reading raw process memory.
 
 Written in C99 for x86-64 Linux. No runtime dependencies beyond glibc.
 
@@ -15,6 +15,8 @@ When a Linux process enters D-state, the kernel has suspended it inside a system
 This creates a diagnostic problem. Traditional debuggers like `gdb` attach to processes using `ptrace`. `ptrace` requires delivering `SIGSTOP` to the target process first. A D-state process cannot receive signals. So `ptrace` fails entirely.
 
 This tool works around that limitation. It reads everything it needs from `/proc`, which is a virtual filesystem the kernel maintains for exactly this purpose. No signals, no ptrace, no process cooperation required.
+
+For S-state (interruptible sleep) and T-state (stopped) processes, the situation is different. Those processes can receive signals, so ptrace works. The tool takes advantage of this: when a process is in S or T-state, it supplements the `/proc` reads with a live ptrace register snapshot. This is useful because `/proc/[pid]/syscall` only captures registers when the process is actually inside a syscall. If it is not, that file returns "running" or "-1" and there is no stack pointer to start unwinding from. The ptrace snapshot fills that gap.
 
 ---
 
@@ -30,7 +32,8 @@ dstate-debugger/
 ├── src/
 │   ├── proc_utils.c       /proc file I/O, symlinks, path building
 │   ├── detector.c         D-state process scanning
-│   └── proc_reader.c      Per-PID diagnostics, x86-64 syscall table
+│   ├── proc_reader.c      Per-PID diagnostics, x86-64 syscall table
+│   └── ptrace_reader.c    Register reading via ptrace for S/T-state processes
 └── test/
     ├── unit_test.c        Unit tests for parsing and utility functions
     ├── monitor.c          Forks child into D-state, demonstrates signal immunity
@@ -56,6 +59,10 @@ Scans `/proc` to find processes in D-state. Opens the `/proc` directory, iterate
 Reads deep diagnostics for a single PID: stat, wchan, syscall, kernel stack, maps, and process memory. Contains the x86-64 syscall-number-to-name table. Entry point: `read_full_diagnostics()`.
 
 Headers in `include/dstate.h` define all shared data structures and function declarations. `include/proc_utils.h` exposes the utility interface.
+
+**Complementary: `src/ptrace_reader.c`**
+
+This file is not a fourth layer in the `/proc` pipeline. It is a separate observation method that applies only when the process state allows it. The three-layer `/proc` pipeline handles everything for D-state processes. For S/T-state processes, `ptrace_reader.c` adds live CPU register access that `/proc` cannot provide when the process is not currently inside a syscall. The rest of the pipeline (maps, user stack unwinding, symbol resolution) consumes those registers the same way it would consume values read from `/proc/[pid]/syscall`.
 
 ---
 
@@ -94,7 +101,7 @@ sudo ./dstate -p PID     # diagnose a specific process
 ./dstate -h              # show help
 ```
 
-Root or `CAP_SYS_PTRACE` is required for two things: reading `/proc/[pid]/stack` (kernel stack trace) and reading `/proc/[pid]/mem` (user stack unwinding). All other diagnostics, syscall identification, fd resolution, wchan, memory map, basic stat, work without elevated privileges.
+Root or `CAP_SYS_PTRACE` is required for three things: reading `/proc/[pid]/stack` (kernel stack trace), reading `/proc/[pid]/mem` (user stack unwinding), and attaching via ptrace to read registers on S/T-state processes. All other diagnostics, syscall identification, fd resolution, wchan, memory map, basic stat, work without elevated privileges.
 
 ---
 
@@ -110,41 +117,65 @@ The tool opens `/proc` and iterates every directory whose name is a number. Each
 
 The tool reads `/proc/[pid]/syscall`. This file contains the current syscall number, six argument registers, the stack pointer, and the instruction pointer, all in one line.
 
-The syscall number is mapped to a name using a static table specific to x86-64 (for example, nr=0 is `read`, nr=1 is `write`). If the number is not in the table, the tool falls back to `syscall_N` as a placeholder.
+The syscall number is mapped to a name using a static table specific to x86-64 (for example, nr=0 is `read`, nr=1 is `write`, nr=72 is `fcntl`, nr=73 is `flock`). If the number is not in the table, the tool falls back to `syscall_N` as a placeholder.
 
 This tells you exactly what the kernel was doing when the process froze.
 
-### Step 3: Blocking file descriptor resolution
+### Step 3: Register reading via ptrace (S/T-state only)
 
-Some syscalls operate on a file descriptor: `read`, `write`, `ioctl`, `pread64`, `pwrite64`, `readv`, `writev`, `connect`, `accept`, `accept4`, `sendto`, `recvfrom`. For these, the first argument (args[0]) is the fd number.
+For a D-state process, this step is skipped entirely. The kernel will not deliver `SIGSTOP` to a process in uninterruptible sleep, so `ptrace(PTRACE_ATTACH)` would block the tool itself indefinitely waiting for a stop that never arrives. There is no safe way to ptrace a D-state process.
+
+For S-state and T-state processes, ptrace is safe. The tool attaches, waits for the process to stop, reads the CPU registers (`PTRACE_GETREGS` fills a `struct user_regs_struct`), and immediately detaches. Three values are captured:
+
+- **RIP** (instruction pointer): the address of the instruction the CPU was about to execute.
+- **RSP** (stack pointer): the address of the top of the user-space stack at this instant.
+- **RBP** (base pointer): the address of the previous stack frame boundary.
+
+These values are stored in `diag->ptrace_rip`, `diag->ptrace_rsp`, and `diag->ptrace_rbp`. The `ptrace_valid` flag records whether this step succeeded.
+
+### Step 4: Blocking file descriptor resolution
+
+Some syscalls operate on a file descriptor: `read`, `write`, `ioctl`, `pread64`, `pwrite64`, `readv`, `writev`, `connect`, `accept`, `accept4`, `sendto`, `recvfrom`, `fcntl`, `flock`. For these, the first argument (args[0]) is the fd number.
 
 The tool resolves that fd by reading the symbolic link `/proc/[pid]/fd/N`. This symbolic link points to the actual file, socket, or device the process has open. This is how the tool can tell you "blocked on `/tmp/fuse_mount/trap.txt`" instead of just "fd 3".
 
-### Step 4: Kernel stack trace
+### Step 5: Kernel stack trace
 
 The tool reads `/proc/[pid]/stack`. This file contains the live kernel call stack for the process: the exact chain of kernel functions that led to the current wait. It is the most direct answer to "what is the kernel doing right now?"
 
 Reading this file requires root or `CAP_SYS_PTRACE`. Without privileges, the tool prints a message explaining why this section is unavailable.
 
-### Step 5: Wait channel
+### Step 6: Wait channel
 
 The tool reads `/proc/[pid]/wchan`. This is a single string: the name of the kernel function where the process is currently sleeping. It is a one-line summary of the kernel stack.
 
 For example, `request_wait_answer` identifies FUSE request waiting. `nfs_wait_bit_killable` identifies NFS I/O waiting.
 
-### Step 6: Memory map parsing
+### Step 7: Memory map parsing
 
 The tool reads `/proc/[pid]/maps`. This file lists every virtual memory region the process has: start address, end address, permissions (`rwxp`), and the backing file (or anonymous if there is none).
 
-The tool parses this into a table of `map_entry_t` structs. This table is used in the next step to identify which memory addresses belong to executable code.
+The tool parses this into a table of `map_entry_t` structs. This table is used in the next two steps: to search for lock conflicts and to identify which memory addresses belong to executable code during user stack unwinding.
 
-### Step 7: User stack unwinding
+### Step 8: File lock conflict detection
 
-The tool opens `/proc/[pid]/mem` and reads 2048 bytes starting from the stack pointer captured in step 2. It then scans every 8-byte word in that buffer. If a word's value falls inside an executable region from the maps table (a region with `x` in its permissions), it is treated as a candidate return address.
+If the current syscall is `fcntl` (nr=72) or `flock` (nr=73), the process is attempting to acquire a file lock and is blocked because someone else holds it. The tool can identify exactly who.
+
+First it resolves the file descriptor (args[0]) to a path using `/proc/[pid]/fd/N`. Then it calls `stat()` on that path to get the file's device major:minor number and inode number. These three numbers together uniquely identify a file on the system. Two processes can have the same file open under completely different paths (hard links, bind mounts), but the inode and device numbers will always be identical.
+
+The tool then reads `/proc/locks`. This is a kernel-maintained file listing every advisory and mandatory lock currently held anywhere on the system. Each line contains the lock type (FLOCK or POSIX), advisory or mandatory status, access mode (READ or WRITE), the PID of the lock holder, and the device major:minor and inode of the locked file.
+
+The tool scans every line for a matching major:minor:inode triple where the holder PID is different from the waiting process. When a match is found, the holder PID, lock type, access mode, and file path are stored in `diag->lock_conflict`. At print time, the holder's command name is looked up by reading `/proc/[holder_pid]/comm`.
+
+### Step 9: User stack unwinding
+
+The tool opens `/proc/[pid]/mem` and reads 2048 bytes starting from the stack pointer. For D-state processes this pointer comes from `/proc/[pid]/syscall`. For S/T-state processes it comes from the ptrace RSP captured in step 3, because the process may not be inside a syscall at all.
+
+The tool scans every 8-byte word in that buffer. If a word's value falls inside an executable region from the maps table (a region with `x` in its permissions), it is treated as a candidate return address.
 
 This is a heuristic. The stack is a contiguous region of memory, and return addresses are pushed onto it by the CPU's `call` instruction. Scanning for values that land in executable regions is a reasonable approximation of stack unwinding, but it is not perfect. It can include false positives (values that happen to look like code pointers) and miss frames stored in registers.
 
-### Step 8: Symbol resolution
+### Step 10: Symbol resolution
 
 For each candidate return address that points to a mapped binary file (a path starting with `/`), the tool calls `addr2line` to translate the file offset to a function name and source file:line.
 
@@ -187,9 +218,18 @@ System Call Information:
    IP:        0x7f56a66f2687
    SP:        0x7ffe6acee8f0
 
+Registers (via ptrace):
+   RIP: 0x7f56a66f2687
+   RSP: 0x7ffe6acee8f0
+   RBP: 0x7ffe6aceeef0
+
 Blocking File Descriptor:
    FD:        3
    Path:      /tmp/fuse_mount/trap.txt
+
+Lock Conflict:
+   Waiting for: WRITE lock on /var/lock/myapp.lock
+   Held by PID: 5678 (myapp)
 
 Memory Usage:
     Virtual:     5812 KB
@@ -210,7 +250,7 @@ Memory Regions:
    0x7f56a66d0000-0x7f56a66f3000  /usr/lib/x86_64-linux-gnu/libc.so.6
    0x7ffe6acce000-0x7ffe6acef000  [stack]
 
-User Stack Trace:
+User Stack Trace (ptrace RSP):
    [0]  0x7f56a66f2687  /usr/lib/x86_64-linux-gnu/libc.so.6
          function: __GI___read
          source: ../sysdeps/unix/sysv/linux/read.c:26  (+0x22687)
@@ -218,6 +258,8 @@ User Stack Trace:
          function: main
          source: cat.c:140  (+0xa32)
 ```
+
+The "User Stack Trace" header shows the source of the starting address in parentheses. When ptrace succeeded, it says `(ptrace RSP)`. When the tool fell back to the syscall file, it says `(syscall SP)`.
 
 Reading this output top to bottom tells a complete story. The process `cat` is in D-state, sleeping in `request_wait_answer` (a FUSE kernel function). It is stuck in a `read` syscall on fd 3, which resolves to `/tmp/fuse_mount/trap.txt`. The kernel stack confirms the path from the FUSE page fault handler through the VFS layer. The user stack shows it entered the kernel via `__GI___read` in libc, called from `main`.
 
@@ -288,6 +330,26 @@ const char *syscall_name(long nr);
 void print_diagnostics(const process_diagnostics_t *diag);
 ```
 
+### Registers (ptrace)
+
+```c
+int read_registers_ptrace(pid_t pid, uint64_t *rip, uint64_t *rsp, uint64_t *rbp);
+```
+
+Attaches to the process with `PTRACE_ATTACH`, waits for it to stop with `waitpid`, reads the full register set with `PTRACE_GETREGS`, and immediately detaches with `PTRACE_DETACH`. Only called from `read_full_diagnostics()` when the process state is `S` or `T`. Returns `0` on success. Returns `-1` if permission is denied, if the process no longer exists, or if the process transitioned into D-state between the state check and the attach attempt (in which case waitpid would block, but the implementation treats the failed waitpid as an error and detaches safely).
+
+The results are stored in `diag->ptrace_rip`, `diag->ptrace_rsp`, and `diag->ptrace_rbp`. The `diag->ptrace_valid` flag is set to `1` only on success.
+
+### Lock Conflict Detection
+
+```c
+int read_lock_conflict(pid_t pid, process_diagnostics_t *diag);
+```
+
+Checks whether the current syscall is `fcntl` (nr=72) or `flock` (nr=73) and if not it returns immediately. If so, it resolves the file descriptor from args[0] via `/proc/[pid]/fd/N`, calls `stat()` to obtain the file's device major:minor and inode, then scans `/proc/locks` line by line looking for an entry with a matching major:minor:inode triple held by a different PID.
+
+On finding a conflict, sets `diag->lock_conflict.found = 1` and fills in `holder_pid`, `lock_type`, `access`, and `path`. Returns `0` on success (conflict found or syscall not applicable), `-1` if `/proc/locks` cannot be opened or the fd symlink cannot be resolved.
+
 ### Memory Maps and User Stack
 
 ```c
@@ -301,11 +363,11 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
 
 On failure, `diag->user_stack.reason` is set to one of:
 
-| Constant                 | Value | Meaning                                                                                                           |
-| ------------------------ | ----- | ----------------------------------------------------------------------------------------------------------------- |
-| `USER_STACK_ERR_PERM`    | 1     | Permission denied opening `/proc/[pid]/mem`. Run as root or with `CAP_SYS_PTRACE`.                                |
-| `USER_STACK_ERR_UNAVAIL` | 2     | Memory unreadable or the process vanished between steps.                                                          |
-| `USER_STACK_ERR_NO_SP`   | 3     | Stack pointer is zero. The process was not in a syscall when sampled, so there is no starting point for the scan. |
+| Constant                 | Value | Meaning                                                                                                                                                                         |
+| ------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `USER_STACK_ERR_PERM`    | 1     | Permission denied opening `/proc/[pid]/mem`. Run as root or with `CAP_SYS_PTRACE`.                                                                                              |
+| `USER_STACK_ERR_UNAVAIL` | 2     | Memory unreadable or the process vanished between steps.                                                                                                                        |
+| `USER_STACK_ERR_NO_SP`   | 3     | Stack pointer is zero. The process was not in a syscall when sampled, and ptrace register reading also failed or was not attempted, so there is no starting point for the scan. |
 
 ---
 
@@ -315,13 +377,15 @@ On failure, `diag->user_stack.reason` is set to one of:
 
 **TOCTOU races.** Between the detection scan and the diagnostic read, a process can exit. This is unavoidable with `/proc`. The tool handles it gracefully: `read_full_diagnostics` returns `DSTATE_PROC_GONE` and the process is skipped.
 
-**Privileges required for kernel stack and user stack.** Reading `/proc/[pid]/stack` and `/proc/[pid]/mem` both require root or `CAP_SYS_PTRACE`. The kernel enforces this. All other diagnostics are available without elevated privileges.
+**Privileges required for kernel stack, user stack, and ptrace.** Reading `/proc/[pid]/stack` and `/proc/[pid]/mem` both require root or `CAP_SYS_PTRACE`. Attaching via ptrace for register reads on S/T-state processes requires the same. The kernel enforces this.
 
 **Symbol resolution requires debug info.** `resolve_symbol` calls `addr2line` for each frame. Function names and source lines only appear for binaries compiled with `-g`. Without debug information, every frame shows as `??` / `??:0`. Paths containing a single quote character are skipped entirely to avoid shell injection.
 
 **User stack is a heuristic.** Scanning raw stack memory for values that fall in executable regions is an approximation, not proper stack unwinding. It can include false positives (arbitrary values that happen to point into code) and miss frames that the compiler stored in registers rather than on the stack.
 
-**ptrace cannot attach to D-state processes.** This is why the tool reads `/proc` instead of using a debugger-style approach. `SIGSTOP` cannot be delivered to a process in uninterruptible sleep, so `ptrace(PTRACE_ATTACH, ...)` blocks indefinitely.
+**ptrace cannot attach to D-state processes.** This is why the tool reads `/proc` instead of using a debugger-style approach for D-state. `SIGSTOP` cannot be delivered to a process in uninterruptible sleep, so `ptrace(PTRACE_ATTACH, ...)` blocks indefinitely. For S-state and T-state processes, ptrace works normally and the tool uses it to capture live register values.
+
+**Lock conflict detection covers only advisory file locks.** The `flock` and `fcntl` locking mechanisms are advisory: the kernel tracks them and exposes them in `/proc/locks`. Futex-based locks (pthreads mutexes, C++ `std::mutex`, Go sync primitives) operate through a completely different kernel mechanism. They do not appear in `/proc/locks` and require inspecting the futex wait queue directly, which is not accessible through `/proc`. If a process is deadlocked on a mutex rather than a file lock, this tool will not identify the holder.
 
 ---
 
