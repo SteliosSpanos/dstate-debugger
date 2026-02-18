@@ -354,7 +354,6 @@ On finding a conflict, sets `diag->lock_conflict.found = 1` and fills in `holder
 
 ```c
 int read_process_maps(pid_t pid, process_maps_t *maps);
-const char *maps_find_region(const process_maps_t *maps, uint64_t addr);
 int read_user_stack(pid_t pid, process_diagnostics_t *diag);
 void resolve_symbol(const char *binary_path, uint64_t offset,
                     char *func_out, size_t func_len,
