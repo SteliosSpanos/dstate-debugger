@@ -426,16 +426,6 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	printf("\n");
 }
 
-const char *maps_find_region(const process_maps_t *maps, uint64_t addr)
-{
-	for (int i = 0; i < maps->count; ++i)
-	{
-		if (addr >= maps->entries[i].start && addr < maps->entries[i].end)
-			return maps->entries[i].path[0] ? maps->entries[i].path : "(anonymous)";
-	}
-	return "(unknown)";
-}
-
 int read_process_maps(pid_t pid, process_maps_t *maps)
 {
 	char path[64];
