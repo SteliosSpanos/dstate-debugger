@@ -653,7 +653,6 @@ int read_lock_conflict(pid_t pid, process_diagnostics_t *diag)
 			return 0;
 		}
 	}
-
 	fclose(fp);
 	return -1;
 }
