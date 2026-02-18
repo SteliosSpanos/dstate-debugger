@@ -440,7 +440,7 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 {
 	char path[64];
 	FILE *fp;
-	char line[512];
+	char line[1024];
 
 	maps->count = 0;
 
