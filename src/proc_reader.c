@@ -643,8 +643,11 @@ int read_lock_conflict(pid_t pid, process_diagnostics_t *diag)
 			diag->lock_conflict.found = 1;
 			diag->lock_conflict.holder_pid = holder_pid;
 			strncpy(diag->lock_conflict.lock_type, lock_type, sizeof(diag->lock_conflict.lock_type) - 1);
+			diag->lock_conflict.lock_type[sizeof(diag->lock_conflict.lock_type) - 1] = '\0';
 			strncpy(diag->lock_conflict.access, access, sizeof(diag->lock_conflict.access) - 1);
+			diag->lock_conflict.access[sizeof(diag->lock_conflict.access) - 1] = '\0';
 			strncpy(diag->lock_conflict.path, file_path, sizeof(diag->lock_conflict.path) - 1);
+			diag->lock_conflict.path[sizeof(diag->lock_conflict.path) - 1] = '\0';
 
 			fclose(fp);
 			return 0;
