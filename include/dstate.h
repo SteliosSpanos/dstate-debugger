@@ -131,4 +131,6 @@ int read_registers_ptrace(pid_t pid, uint64_t *rip, uint64_t *rsp, uint64_t *rbp
 
 int read_lock_conflict(pid_t pid, process_diagnostics_t *diag);
 
+int write_core_file(pid_t pid, process_diagnostics_t *diag, const char *outpath);
+
 #endif
