@@ -21,6 +21,7 @@ typedef struct
     uint64_t end;
     char perms[5];
     char path[256];
+    uint64_t file_offset;
 } map_entry_t;
 
 typedef struct

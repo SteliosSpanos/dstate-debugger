@@ -72,6 +72,74 @@ static size_t calc_note_size(const char *name, size_t descsz)
     return sizeof(note_hdr_t) + align4(strlen(name) + 1) + align4(descsz);
 }
 
+static size_t calc_nt_file_descsz(const process_maps_t *maps)
+{
+    int file_count = 0;
+    size_t name_sz = 0;
+
+    for (int i = 0; i < maps->count; ++i)
+    {
+        if (maps->entries[i].path[0] != '/')
+            continue;
+
+        file_count++;
+        name_sz += strlen(maps->entries[i].path) + 1;
+    }
+
+    size_t result = 2 * sizeof(uint64_t) + (size_t)file_count * 3 * sizeof(uint64_t) + name_sz;
+
+    return result;
+}
+
+static int write_nt_file(int fd, const process_maps_t *maps)
+{
+    uint64_t count = 0;
+    for (int i = 0; i < maps->count; ++i)
+    {
+        if (maps->entries[i].path[0] == '/')
+            count++;
+    }
+
+    uint64_t page_size = (uint64_t)sysconf(_SC_PAGESIZE);
+
+    if (write(fd, &count, sizeof(count)) != (ssize_t)sizeof(count))
+        return -1;
+
+    if (write(fd, &page_size, sizeof(page_size)) != (ssize_t)sizeof(page_size))
+        return -1;
+
+    for (int i = 0; i < maps->count; ++i)
+    {
+        const map_entry_t *e = &maps->entries[i];
+        if (e->path[0] != '/')
+            continue;
+
+        uint64_t file_off_pages = e->file_offset / page_size;
+
+        if (write(fd, &e->start, sizeof(uint64_t)) != (ssize_t)sizeof(uint64_t))
+            return -1;
+
+        if (write(fd, &e->end, sizeof(uint64_t)) != (ssize_t)sizeof(uint64_t))
+            return -1;
+
+        if (write(fd, &file_off_pages, sizeof(uint64_t)) != (ssize_t)sizeof(uint64_t))
+            return -1;
+    }
+
+    for (int i = 0; i < maps->count; ++i)
+    {
+        const map_entry_t *e = &maps->entries[i];
+        if (e->path[0] != '/')
+            continue;
+
+        size_t len = strlen(e->path) + 1;
+        if (write(fd, e->path, len) != (ssize_t)len)
+            return -1;
+    }
+
+    return 0;
+}
+
 static int compute_layout(pid_t pid, const process_maps_t *maps, core_layout_t *layout)
 {
     char mem_path[64];
@@ -96,7 +164,7 @@ static int compute_layout(pid_t pid, const process_maps_t *maps, core_layout_t *
 
     close(mem_fd);
 
-    layout->note_total_size = calc_note_size("CORE", sizeof(struct elf_prstatus)) + calc_note_size("CORE", sizeof(struct elf_prpsinfo));
+    layout->note_total_size = calc_note_size("CORE", sizeof(struct elf_prstatus)) + calc_note_size("CORE", sizeof(struct elf_prpsinfo)) + calc_note_size("CORE", calc_nt_file_descsz(maps));
 
     int phdr_count = 1 + layout->readable_count;
     uint64_t phdr_table_size = (uint64_t)phdr_count * sizeof(Elf64_Phdr);
@@ -275,6 +343,29 @@ static int write_note_blob(int fd, const process_diagnostics_t *diag)
     strncpy(prpsinfo.pr_psargs, diag->cmdline, sizeof(prpsinfo.pr_psargs) - 1);
 
     if (write_note(fd, "CORE", NT_PRPSINFO, &prpsinfo, sizeof(prpsinfo)) < 0)
+        return -1;
+
+    size_t nt_file_descsz = calc_nt_file_descsz(&diag->maps);
+    uint32_t namesz = 5;
+    uint32_t name_pad = 3;
+    uint32_t data_pad = (uint32_t)(align4(nt_file_descsz) - nt_file_descsz);
+
+    note_hdr_t nt_file_hdr = {namesz, (uint32_t)nt_file_descsz, NT_FILE};
+    static const char zeros[8] = {0};
+
+    if (write(fd, &nt_file_hdr, sizeof(nt_file_hdr)) != (ssize_t)sizeof(nt_file_hdr))
+        return -1;
+
+    if (write(fd, "CORE", namesz) != (ssize_t)namesz)
+        return -1;
+
+    if (write(fd, zeros, name_pad) != (ssize_t)name_pad)
+        return -1;
+
+    if (write_nt_file(fd, &diag->maps) < 0)
+        return -1;
+
+    if (data_pad && write(fd, zeros, data_pad) != (ssize_t)data_pad)
         return -1;
 
     return 0;
