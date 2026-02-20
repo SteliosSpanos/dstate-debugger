@@ -14,38 +14,6 @@
 #include <stdio.h>
 
 #include "../include/dstate.h"
-
-typedef enum
-{
-    REG_R15 = 0,
-    REG_R14 = 1,
-    REG_R13 = 2,
-    REG_R12 = 3,
-    REG_RBP = 4,
-    REG_RBX = 5,
-    REG_R11 = 6,
-    REG_R10 = 7,
-    REG_R9 = 8,
-    REG_R8 = 9,
-    REG_RAX = 10,
-    REG_RCX = 11,
-    REG_RDX = 12,
-    REG_RSI = 13,
-    REG_RDI = 14,
-    REG_ORIG_RAX = 15,
-    REG_RIP = 16,
-    REG_CS = 17,
-    REG_EFLAGS = 18,
-    REG_RSP = 19,
-    REG_SS = 20,
-    REG_FS_BASE = 21,
-    REG_GS_BASE = 22,
-    REG_DS = 23,
-    REG_ES = 24,
-    REG_FS = 25,
-    REG_GS = 26
-} reg_index_t;
-
 typedef struct
 {
     uint32_t namesz;
@@ -313,22 +281,19 @@ static int write_note_blob(int fd, const process_diagnostics_t *diag)
 
     if (diag->ptrace_valid)
     {
-        prstatus.pr_reg[REG_RIP] = diag->ptrace_rip;
-        prstatus.pr_reg[REG_RSP] = diag->ptrace_rsp;
-        prstatus.pr_reg[REG_RBP] = diag->ptrace_rbp;
+        memcpy(prstatus.pr_reg, diag->ptrace_regs, sizeof(prstatus.pr_reg));
     }
-
-    if (diag->basic.stack_ptr != 0)
+    else if (diag->basic.stack_ptr != 0)
     {
-        prstatus.pr_reg[REG_RIP] = diag->basic.instruction_ptr;
-        prstatus.pr_reg[REG_RSP] = diag->basic.stack_ptr;
-        prstatus.pr_reg[REG_RDI] = diag->basic.syscall_args[0];
-        prstatus.pr_reg[REG_RSI] = diag->basic.syscall_args[1];
-        prstatus.pr_reg[REG_RDX] = diag->basic.syscall_args[2];
-        prstatus.pr_reg[REG_R10] = diag->basic.syscall_args[3];
-        prstatus.pr_reg[REG_R8] = diag->basic.syscall_args[4];
-        prstatus.pr_reg[REG_R9] = diag->basic.syscall_args[5];
-        prstatus.pr_reg[REG_ORIG_RAX] = (unsigned long)diag->basic.syscall_nr;
+        prstatus.pr_reg[ELFREG_RIP] = diag->basic.instruction_ptr;
+        prstatus.pr_reg[ELFREG_RSP] = diag->basic.stack_ptr;
+        prstatus.pr_reg[ELFREG_RDI] = diag->basic.syscall_args[0];
+        prstatus.pr_reg[ELFREG_RSI] = diag->basic.syscall_args[1];
+        prstatus.pr_reg[ELFREG_RDX] = diag->basic.syscall_args[2];
+        prstatus.pr_reg[ELFREG_R10] = diag->basic.syscall_args[3];
+        prstatus.pr_reg[ELFREG_R8] = diag->basic.syscall_args[4];
+        prstatus.pr_reg[ELFREG_R9] = diag->basic.syscall_args[5];
+        prstatus.pr_reg[ELFREG_ORIG_RAX] = (unsigned long)diag->basic.syscall_nr;
     }
 
     if (write_note(fd, "CORE", NT_PRSTATUS, &prstatus, sizeof(prstatus)) < 0)

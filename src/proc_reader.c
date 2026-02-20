@@ -243,13 +243,9 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 
 	if (diag->basic.state == 'S' || diag->basic.state == 'T')
 	{
-		uint64_t rip, rsp, rbp;
-		if (read_registers_ptrace(pid, &rip, &rsp, &rbp) == 0)
+		if (read_registers_ptrace(pid, &diag->ptrace_regs) == 0)
 		{
 			diag->ptrace_valid = 1;
-			diag->ptrace_rip = rip;
-			diag->ptrace_rsp = rsp;
-			diag->ptrace_rbp = rbp;
 		}
 	}
 
@@ -347,9 +343,18 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	if (diag->ptrace_valid)
 	{
 		printf("\nRegisters (via ptrace):\n");
-		printf("   RIP: 0x%lx\n", diag->ptrace_rip);
-		printf("   RSP: 0x%lx\n", diag->ptrace_rsp);
-		printf("   RBP: 0x%lx\n", diag->ptrace_rbp);
+		printf("   RIP: 0x%016llx   RSP: 0x%016llx   RBP: 0x%016llx\n",
+			   diag->ptrace_regs[ELFREG_RIP], diag->ptrace_regs[ELFREG_RSP], diag->ptrace_regs[ELFREG_RBP]);
+		printf("   RAX: 0x%016llx   RBX: 0x%016llx   RCX: 0x%016llx\n",
+			   diag->ptrace_regs[ELFREG_RAX], diag->ptrace_regs[ELFREG_RBX], diag->ptrace_regs[ELFREG_RCX]);
+		printf("   RDX: 0x%016llx   RSI: 0x%016llx   RDI: 0x%016llx\n",
+			   diag->ptrace_regs[ELFREG_RDX], diag->ptrace_regs[ELFREG_RSI], diag->ptrace_regs[ELFREG_RDI]);
+		printf("   R8:  0x%016llx   R9:  0x%016llx   R10: 0x%016llx\n",
+			   diag->ptrace_regs[ELFREG_R8], diag->ptrace_regs[ELFREG_R9], diag->ptrace_regs[ELFREG_R10]);
+		printf("   R11: 0x%016llx   R12: 0x%016llx   R13: 0x%016llx\n",
+			   diag->ptrace_regs[ELFREG_R11], diag->ptrace_regs[ELFREG_R12], diag->ptrace_regs[ELFREG_R13]);
+		printf("   R14: 0x%016llx   R15: 0x%016llx   EFLAGS: 0x%08llx\n",
+			   diag->ptrace_regs[ELFREG_R14], diag->ptrace_regs[ELFREG_R15], diag->ptrace_regs[ELFREG_EFLAGS]);
 	}
 
 	if (diag->blocking_fd >= 0)
@@ -462,6 +467,28 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 	return 0;
 }
 
+static int is_call_target(int mem_fd, uint64_t addr)
+{
+	unsigned char buf[5];
+	ssize_t n;
+
+	n = pread(mem_fd, buf, 5, (off_t)(addr - 5));
+	if (n == 5 && buf[0] == 0xE8)
+		return 1;
+
+	n = pread(mem_fd, buf, 2, (off_t)(addr - 2));
+	if (n == 2 && buf[0] == 0xFF && (buf[1] & 0x38) == 0x10)
+		return 1;
+
+	n = pread(mem_fd, buf, 3, (off_t)(addr - 3));
+	if (n == 3 && buf[0] == 0xFF && (buf[1] & 0x38) == 0x10)
+		return 1;
+	if (n == 3 && (buf[0] & 0xF0) == 0x40 && buf[1] == 0xFF && (buf[2] & 0x38) == 0x10)
+		return 1;
+
+	return 0;
+}
+
 int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 {
 	char path[64];
@@ -474,7 +501,7 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 	diag->user_stack.valid = 0;
 	diag->user_stack.reason = 0;
 
-	sp = diag->ptrace_valid ? diag->ptrace_rsp : diag->basic.stack_ptr;
+	sp = diag->ptrace_valid ? diag->ptrace_regs[ELFREG_RSP] : diag->basic.stack_ptr;
 	if (sp == 0)
 	{
 		diag->user_stack.reason = USER_STACK_ERR_NO_SP;
@@ -493,10 +520,10 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 	}
 
 	bytes_read = pread(mem_fd, buffer, sizeof(buffer), (off_t)sp);
-	close(mem_fd);
 
 	if (bytes_read <= 0)
 	{
+		close(mem_fd);
 		diag->user_stack.reason = USER_STACK_ERR_UNAVAIL;
 		return -1;
 	}
@@ -518,6 +545,9 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 
 			if (val >= e->start && val < e->end)
 			{
+				if (!is_call_target(mem_fd, val))
+					break;
+
 				user_frame_t *f = &diag->user_stack.frames[diag->user_stack.count];
 				f->addr = val;
 				f->region_start = e->start;
@@ -546,6 +576,7 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 		}
 	}
 
+	close(mem_fd);
 	return 0;
 }
 
