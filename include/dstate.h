@@ -3,6 +3,37 @@
 
 #include <sys/types.h>
 #include <stdint.h>
+#include <sys/procfs.h>
+typedef enum
+{
+    ELFREG_R15 = 0,
+    ELFREG_R14 = 1,
+    ELFREG_R13 = 2,
+    ELFREG_R12 = 3,
+    ELFREG_RBP = 4,
+    ELFREG_RBX = 5,
+    ELFREG_R11 = 6,
+    ELFREG_R10 = 7,
+    ELFREG_R9 = 8,
+    ELFREG_R8 = 9,
+    ELFREG_RAX = 10,
+    ELFREG_RCX = 11,
+    ELFREG_RDX = 12,
+    ELFREG_RSI = 13,
+    ELFREG_RDI = 14,
+    ELFREG_ORIG_RAX = 15,
+    ELFREG_RIP = 16,
+    ELFREG_CS = 17,
+    ELFREG_EFLAGS = 18,
+    ELFREG_RSP = 19,
+    ELFREG_SS = 20,
+    ELFREG_FS_BASE = 21,
+    ELFREG_GS_BASE = 22,
+    ELFREG_DS = 23,
+    ELFREG_ES = 24,
+    ELFREG_FS = 25,
+    ELFREG_GS = 26
+} elfreg_index_t;
 
 #define DSTATE_PROC_GONE 1
 #define USER_STACK_ERR_PERM 1
@@ -102,9 +133,7 @@ typedef struct
     user_stack_t user_stack;
 
     int ptrace_valid;
-    uint64_t ptrace_rip;
-    uint64_t ptrace_rsp;
-    uint64_t ptrace_rbp;
+    elf_gregset_t ptrace_regs;
 
     lock_conflict_t lock_conflict;
 } process_diagnostics_t;
@@ -128,7 +157,7 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
                     char *func_out, size_t func_len,
                     char *src_out, size_t src_len);
 
-int read_registers_ptrace(pid_t pid, uint64_t *rip, uint64_t *rsp, uint64_t *rbp);
+int read_registers_ptrace(pid_t pid, elf_gregset_t *regs_out);
 
 int read_lock_conflict(pid_t pid, process_diagnostics_t *diag);
 
