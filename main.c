@@ -17,6 +17,7 @@ static void print_usage(const char *prog)
 			"\n"
 			"  -p PID    Diagnose a specific process\n"
 			"  -h        Show this help\n"
+			"  -o FILE   Write ELF core file (use with -p)\n"
 			"\n"
 			"Reading /proc/[pid]/stack requires root or CAP_SYS_PTRACE.\n",
 			prog);
@@ -26,8 +27,9 @@ int main(int argc, char *argv[])
 {
 	int opt;
 	pid_t target_pid = -1;
+	const char *outfile = NULL;
 
-	while ((opt = getopt(argc, argv, "hp:")) != -1)
+	while ((opt = getopt(argc, argv, "hp:o:")) != -1)
 	{
 		switch (opt)
 		{
@@ -41,6 +43,9 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "Invalid PID: %s\n", optarg);
 				return 1;
 			}
+			break;
+		case 'o':
+			outfile = optarg;
 			break;
 		default:
 			print_usage(argv[0]);
@@ -65,6 +70,10 @@ int main(int argc, char *argv[])
 		}
 
 		print_diagnostics(&diag);
+
+		if (outfile)
+			write_core_file(target_pid, &diag, outfile);
+
 		return 0;
 	}
 
