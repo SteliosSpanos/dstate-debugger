@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -std=c99 -D_GNU_SOURCE -Wall -Wextra
 
-SRCS = src/detector.c src/proc_reader.c src/proc_utils.c src/ptrace_reader.c
+SRCS = src/detector.c src/proc_reader.c src/proc_utils.c src/ptrace_reader.c src/core_writer.c
 
 all: dstate
 
