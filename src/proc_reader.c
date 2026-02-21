@@ -298,7 +298,8 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 
 	read_lock_conflict(pid, diag);
 
-	read_user_stack(pid, diag);
+	if (read_user_stack_libunwind(pid, diag) < 0)
+		read_user_stack(pid, diag);
 
 	return 0;
 }
@@ -558,7 +559,7 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 
 				if (e->path[0] == '/')
 				{
-					resolve_symbol(e->path, val - e->start,
+					resolve_symbol(e->path, val - e->start + e->file_offset,
 								   f->function, sizeof(f->function),
 								   f->source, sizeof(f->source));
 				}

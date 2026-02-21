@@ -1,12 +1,12 @@
 CC = gcc
 CFLAGS = -std=c99 -D_GNU_SOURCE -Wall -Wextra
 
-SRCS = src/detector.c src/proc_reader.c src/proc_utils.c src/ptrace_reader.c src/core_writer.c
+SRCS = src/detector.c src/proc_reader.c src/proc_utils.c src/ptrace_reader.c src/core_writer.c src/unwind_reader.c
 
 all: dstate
 
 dstate: main.c $(SRCS)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ -lunwind -lunwind-x86_64
 
 monitor: test/monitor.c $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $^

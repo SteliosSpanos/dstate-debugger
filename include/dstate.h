@@ -163,4 +163,6 @@ int read_lock_conflict(pid_t pid, process_diagnostics_t *diag);
 
 int write_core_file(pid_t pid, process_diagnostics_t *diag, const char *outpath);
 
+int read_user_stack_libunwind(pid_t pid, process_diagnostics_t *diag);
+
 #endif
