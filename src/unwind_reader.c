@@ -20,10 +20,15 @@
  * only the first field: pid.  Because we share the same pointer for both
  * unw_init_remote and _UPT_find_proc_info, every access_mem callback below
  * receives &ctx (not an alien UPT_info pointer) and can read mem_fd correctly.
+ *
+ * FRAGILE: relies on struct UPT_info having pid_t as its first member —
+ * an internal libunwind detail, not part of the public API.  Verified against
+ * libunwind 1.x.  If a future release adds a field before pid, this breaks
+ * silently with no compile-time warning.
  */
 typedef struct
 {
-    pid_t pid;          /* MUST be first: mirrors the start of struct UPT_info */
+    pid_t pid;
     int mem_fd;
     uint64_t rsp;
     uint64_t rip;
@@ -38,14 +43,9 @@ static const int elfreg_map[17] = {
     ELFREG_R12, ELFREG_R13, ELFREG_R14, ELFREG_R15,
     ELFREG_RIP};
 
-/*
- * find_proc_info: reads ELF files from disk via _UPT_find_proc_info.
- * arg == &ctx for both this call and all internal access_mem callbacks,
- * so the pid / mem_fd fields are always interpreted correctly.
- */
 static int acc_find_proc_info(unw_addr_space_t as, unw_word_t ip,
-                               unw_proc_info_t *pip, int need_unwind_info,
-                               void *arg)
+                              unw_proc_info_t *pip, int need_unwind_info,
+                              void *arg)
 {
     return _UPT_find_proc_info(as, ip, pip, need_unwind_info, arg);
 }
@@ -62,7 +62,6 @@ static int acc_get_dyn_info_list_addr(unw_addr_space_t as, unw_word_t *dil,
     return _UPT_get_dyn_info_list_addr(as, dil, arg);
 }
 
-/* access_mem: reads from /proc/[pid]/mem — works for D-state processes. */
 static int acc_access_mem(unw_addr_space_t as, unw_word_t addr, unw_word_t *val,
                           int write, void *arg)
 {
@@ -80,7 +79,6 @@ static int acc_access_mem(unw_addr_space_t as, unw_word_t addr, unw_word_t *val,
     return 0;
 }
 
-/* access_reg: full ptrace set for S/T-state; RSP+RIP only for D-state. */
 static int acc_access_reg(unw_addr_space_t as, unw_regnum_t reg, unw_word_t *val,
                           int write, void *arg)
 {
@@ -109,8 +107,7 @@ static int acc_access_reg(unw_addr_space_t as, unw_regnum_t reg, unw_word_t *val
         return 0;
     }
 
-    *val = 0;
-    return 0;
+    return -UNW_ENOINFO;
 }
 
 static int acc_access_fpreg(unw_addr_space_t as, unw_regnum_t reg, unw_fpreg_t *val,
@@ -148,14 +145,14 @@ static int acc_get_proc_name(unw_addr_space_t as, unw_word_t addr, char *buf,
 }
 
 static unw_accessors_t proc_accessors = {
-    .find_proc_info         = acc_find_proc_info,
-    .put_unwind_info        = acc_put_unwind_info,
+    .find_proc_info = acc_find_proc_info,
+    .put_unwind_info = acc_put_unwind_info,
     .get_dyn_info_list_addr = acc_get_dyn_info_list_addr,
-    .access_mem             = acc_access_mem,
-    .access_reg             = acc_access_reg,
-    .access_fpreg           = acc_access_fpreg,
-    .resume                 = acc_resume,
-    .get_proc_name          = acc_get_proc_name,
+    .access_mem = acc_access_mem,
+    .access_reg = acc_access_reg,
+    .access_fpreg = acc_access_fpreg,
+    .resume = acc_resume,
+    .get_proc_name = acc_get_proc_name,
 };
 
 int read_user_stack_libunwind(pid_t pid, process_diagnostics_t *diag)
@@ -196,15 +193,11 @@ int read_user_stack_libunwind(pid_t pid, process_diagnostics_t *diag)
         return -1;
     }
 
-    /*
-     * ctx.pid must be set: _UPT_find_proc_info passes &ctx to internal
-     * libunwind functions that read ctx->pid to open /proc/pid/maps.
-     */
     unwind_ctx_t ctx = {
-        .pid            = pid,
-        .mem_fd         = mem_fd,
-        .rsp            = rsp,
-        .rip            = rip,
+        .pid = pid,
+        .mem_fd = mem_fd,
+        .rsp = rsp,
+        .rip = rip,
         .have_full_regs = diag->ptrace_valid,
     };
 
