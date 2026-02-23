@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
+#include <limits.h>
 
 #include "include/dstate.h"
 
@@ -37,13 +39,18 @@ int main(int argc, char *argv[])
 			print_usage(argv[0]);
 			return 0;
 		case 'p':
-			target_pid = (pid_t)atoi(optarg);
-			if (target_pid <= 0)
+		{
+			char *endptr;
+			errno = 0;
+			long val = strtol(optarg, &endptr, 10);
+			if (errno != 0 || *endptr != '\0' || val <= 0 || val > INT_MAX)
 			{
 				fprintf(stderr, "Invalid PID: %s\n", optarg);
 				return 1;
 			}
+			target_pid = (pid_t)val;
 			break;
+		}
 		case 'o':
 			outfile = optarg;
 			break;
