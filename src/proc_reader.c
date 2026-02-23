@@ -298,7 +298,7 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 
 	read_lock_conflict(pid, diag);
 
-	if (read_user_stack_libunwind(pid, diag) < 0)
+	if (read_user_stack_libunwind(pid, diag) < 0 || diag->user_stack.count < 3)
 		read_user_stack(pid, diag);
 
 	return 0;
@@ -470,8 +470,11 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 
 static int is_call_target(int mem_fd, uint64_t addr)
 {
-	unsigned char buf[5];
+	unsigned char buf[7];
 	ssize_t n;
+
+	if (addr < 7)
+		return 0;
 
 	n = pread(mem_fd, buf, 5, (off_t)(addr - 5));
 	if (n == 5 && buf[0] == 0xE8)
@@ -485,6 +488,22 @@ static int is_call_target(int mem_fd, uint64_t addr)
 	if (n == 3 && buf[0] == 0xFF && (buf[1] & 0x38) == 0x10)
 		return 1;
 	if (n == 3 && (buf[0] & 0xF0) == 0x40 && buf[1] == 0xFF && (buf[2] & 0x38) == 0x10)
+		return 1;
+
+	n = pread(mem_fd, buf, 2, (off_t)(addr - 6));
+	if (n == 2 && buf[0] == 0xFF && buf[1] == 0x15)
+		return 1;
+
+	if (n == 2 && buf[0] == 0xFF &&
+		(buf[1] & 0x38) == 0x10 && (buf[1] & 0xC0) == 0x80)
+		return 1;
+
+	n = pread(mem_fd, buf, 3, (off_t)(addr - 7));
+	if (n == 3 && (buf[0] & 0xF0) == 0x40 && buf[1] == 0xFF && buf[2] == 0x15)
+		return 1;
+
+	if (n == 3 && (buf[0] & 0xF0) == 0x40 && buf[1] == 0xFF &&
+		(buf[2] & 0x38) == 0x10 && (buf[2] & 0xC0) == 0x80)
 		return 1;
 
 	return 0;
