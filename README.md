@@ -2,9 +2,9 @@
 
 ## Overview
 
-A Linux debugging tool that detects and diagnoses processes stuck in D-state (uninterruptible sleep). It scans `/proc` to find blocked processes, reads their kernel stack traces, identifies what syscall they are waiting in, and reports the exact file path they are blocked on. For S-state and T-state processes it supplements `/proc` with live CPU register reads via ptrace. It also detects file lock conflicts, identifying which other process holds the lock that is blocking the target. It unwinds the user-space call stack by reading raw process memory.
+A Linux debugging tool that detects and diagnoses processes stuck in D-state (uninterruptible sleep). It scans `/proc` to find blocked processes, reads their kernel stack traces, identifies what syscall they are waiting in, and reports the exact file path they are blocked on. For S-state and T-state processes it supplements `/proc` with live CPU register reads via ptrace. It detects file lock conflicts, identifying which other process holds the lock blocking the target. It unwinds the user-space call stack using libunwind with a heuristic fallback. It can also produce a synthetic ELF core file that GDB can load directly.
 
-Written in C99 for x86-64 Linux. No runtime dependencies beyond glibc.
+Written in C99 for x86-64 Linux. Runtime dependencies: glibc and libunwind.
 
 ---
 
@@ -32,8 +32,10 @@ dstate-debugger/
 ├── src/
 │   ├── proc_utils.c       /proc file I/O, symlinks, path building
 │   ├── detector.c         D-state process scanning
-│   ├── proc_reader.c      Per-PID diagnostics, x86-64 syscall table
-│   └── ptrace_reader.c    Register reading via ptrace for S/T-state processes
+│   ├── proc_reader.c      Per-PID diagnostics, user stack heuristic, x86-64 syscall table
+│   ├── ptrace_reader.c    Full register capture via ptrace for S/T-state processes
+│   ├── unwind_reader.c    User stack unwinding via libunwind
+│   └── core_writer.c      Synthetic ELF core file generation
 └── test/
     ├── unit_test.c        Unit tests for parsing and utility functions
     ├── monitor.c          Forks child into D-state, demonstrates signal immunity
@@ -62,17 +64,25 @@ Headers in `include/dstate.h` define all shared data structures and function dec
 
 **Complementary: `src/ptrace_reader.c`**
 
-This file is not a fourth layer in the `/proc` pipeline. It is a separate observation method that applies only when the process state allows it. The three-layer `/proc` pipeline handles everything for D-state processes. For S/T-state processes, `ptrace_reader.c` adds live CPU register access that `/proc` cannot provide when the process is not currently inside a syscall. The rest of the pipeline (maps, user stack unwinding, symbol resolution) consumes those registers the same way it would consume values read from `/proc/[pid]/syscall`.
+Not a fourth layer in the `/proc` pipeline. A separate observation method that applies only when the process state allows it. The three-layer `/proc` pipeline handles everything for D-state processes. For S/T-state processes, `ptrace_reader.c` adds a full 27-register snapshot that `/proc` cannot provide when the process is not currently inside a syscall. The rest of the pipeline (maps, user stack unwinding, core file) consumes those registers the same way it would consume values read from `/proc/[pid]/syscall`.
+
+**Complementary: `src/unwind_reader.c`**
+
+Performs user-space stack unwinding using libunwind. Works on D-state processes by reading memory directly from `/proc/[pid]/mem` instead of using ptrace. When full registers are available (S/T-state), libunwind can walk every frame accurately using DWARF CFI data from the binaries. For D-state, only RSP and RIP are available from `/proc/[pid]/syscall`, so unwinding may stop early when DWARF rules require a callee-saved register that was never captured.
+
+**Complementary: `src/core_writer.c`**
+
+Builds a synthetic ELF core file from a live process. The core can be loaded into GDB with the original binary for post-mortem inspection even though the process is still running. Uses a two-pass design: the first pass probes every VMA and computes all file offsets before writing begins; the second pass writes the entire file in one sequential forward pass.
 
 ---
 
 ## Dependencies
 
-- **Build and runtime**: glibc only. Nothing else.
+- **Build and runtime**: glibc and libunwind.
 - **Testing only**: `libfuse-dev` is required to build the FUSE test filesystem.
 
 ```bash
-sudo apt-get install libfuse-dev
+sudo apt-get install libunwind-dev libfuse-dev
 ```
 
 ---
@@ -96,12 +106,23 @@ make help       # show all targets and usage
 ## Usage
 
 ```bash
-sudo ./dstate            # scan all processes for D-state
-sudo ./dstate -p PID     # diagnose a specific process
-./dstate -h              # show help
+sudo ./dstate                  # scan all processes for D-state
+sudo ./dstate -p PID           # diagnose a specific process
+sudo ./dstate -p PID -o FILE   # diagnose and write an ELF core file
+./dstate -h                    # show help
 ```
 
-Root or `CAP_SYS_PTRACE` is required for three things: reading `/proc/[pid]/stack` (kernel stack trace), reading `/proc/[pid]/mem` (user stack unwinding), and attaching via ptrace to read registers on S/T-state processes. All other diagnostics, syscall identification, fd resolution, wchan, memory map, basic stat, work without elevated privileges.
+Root or `CAP_SYS_PTRACE` is required for three things: reading `/proc/[pid]/stack` (kernel stack trace), reading `/proc/[pid]/mem` (user stack unwinding and core generation), and attaching via ptrace to read registers on S/T-state processes. All other diagnostics (syscall identification, fd resolution, wchan, memory map, basic stat) work without elevated privileges.
+
+### Loading a core file in GDB
+
+```bash
+gdb /path/to/original/binary output.core
+(gdb) bt
+(gdb) x/40gx $rsp
+```
+
+GDB uses the NT_FILE note inside the core to find shared library locations on disk, so backtraces into libc and other libraries resolve correctly even in stripped builds.
 
 ---
 
@@ -125,13 +146,9 @@ This tells you exactly what the kernel was doing when the process froze.
 
 For a D-state process, this step is skipped entirely. The kernel will not deliver `SIGSTOP` to a process in uninterruptible sleep, so `ptrace(PTRACE_ATTACH)` would block the tool itself indefinitely waiting for a stop that never arrives. There is no safe way to ptrace a D-state process.
 
-For S-state and T-state processes, ptrace is safe. The tool attaches, waits for the process to stop, reads the CPU registers (`PTRACE_GETREGS` fills a `struct user_regs_struct`), and immediately detaches. Three values are captured:
+For S-state and T-state processes, ptrace is safe. The tool attaches, waits for the process to stop, reads all 27 CPU registers using `PTRACE_GETREGS`, and immediately detaches. The full register set is stored in `diag->ptrace_regs` as an `elf_gregset_t` array, indexed by the `elfreg_index_t` enum defined in `dstate.h` (`ELFREG_RIP`, `ELFREG_RSP`, `ELFREG_RBP`, etc.). The `ptrace_valid` flag records whether this step succeeded.
 
-- **RIP** (instruction pointer): the address of the instruction the CPU was about to execute.
-- **RSP** (stack pointer): the address of the top of the user-space stack at this instant.
-- **RBP** (base pointer): the address of the previous stack frame boundary.
-
-These values are stored in `diag->ptrace_rip`, `diag->ptrace_rsp`, and `diag->ptrace_rbp`. The `ptrace_valid` flag records whether this step succeeded.
+Having the full register set rather than just RSP and RIP makes a significant difference for stack unwinding. DWARF CFI rules in compiled binaries frequently describe frame recovery in terms of callee-saved registers (RBP, RBX, R12–R15). With the full snapshot, libunwind can follow those rules precisely for every frame.
 
 ### Step 4: Blocking file descriptor resolution
 
@@ -153,9 +170,9 @@ For example, `request_wait_answer` identifies FUSE request waiting. `nfs_wait_bi
 
 ### Step 7: Memory map parsing
 
-The tool reads `/proc/[pid]/maps`. This file lists every virtual memory region the process has: start address, end address, permissions (`rwxp`), and the backing file (or anonymous if there is none).
+The tool reads `/proc/[pid]/maps`. This file lists every virtual memory region the process has: start address, end address, permissions (`rwxp`), file offset, and the backing file (or anonymous if there is none).
 
-The tool parses this into a table of `map_entry_t` structs. This table is used in the next two steps: to search for lock conflicts and to identify which memory addresses belong to executable code during user stack unwinding.
+The tool parses this into a table of `map_entry_t` structs. The file offset field is important: when a binary is partially mapped (which is the normal case, the kernel maps only the needed segments), the offset tells the tool where in the file on disk a given virtual address corresponds to. This is used both for symbol resolution and for the NT_FILE note in the core file.
 
 ### Step 8: File lock conflict detection
 
@@ -169,17 +186,75 @@ The tool scans every line for a matching major:minor:inode triple where the hold
 
 ### Step 9: User stack unwinding
 
-The tool opens `/proc/[pid]/mem` and reads 2048 bytes starting from the stack pointer. For D-state processes this pointer comes from `/proc/[pid]/syscall`. For S/T-state processes it comes from the ptrace RSP captured in step 3, because the process may not be inside a syscall at all.
+User stack unwinding uses two methods in sequence. libunwind runs first. If it fails completely or returns fewer than three frames, the heuristic scanner runs instead.
 
-The tool scans every 8-byte word in that buffer. If a word's value falls inside an executable region from the maps table (a region with `x` in its permissions), it is treated as a candidate return address.
+**libunwind (`src/unwind_reader.c`)**
 
-This is a heuristic. The stack is a contiguous region of memory, and return addresses are pushed onto it by the CPU's `call` instruction. Scanning for values that land in executable regions is a reasonable approximation of stack unwinding, but it is not perfect. It can include false positives (values that happen to look like code pointers) and miss frames stored in registers.
+libunwind reads DWARF CFI (Call Frame Information) data embedded in every compiled binary. DWARF CFI is a precise machine-readable description of how to recover the previous frame from any instruction: which register holds the return address, where callee-saved registers were spilled onto the stack, and so on. This is the same information GDB uses.
+
+The unwinder reads process memory directly from `/proc/[pid]/mem` without attaching to the process. This works for D-state processes. For D-state, the starting point is RSP and RIP from `/proc/[pid]/syscall`. For S/T-state, all 27 registers from ptrace are available as the starting state.
+
+The limitation for D-state is that DWARF rules sometimes say things like "to find the return address, look at what was in RBP when you entered this function". If RBP was never captured (because ptrace failed), libunwind reports the register as unavailable and stops. This is why the fallback exists.
+
+**Heuristic scanner (`src/proc_reader.c`)**
+
+Opens `/proc/[pid]/mem`, reads 2048 bytes from the stack pointer, and scans every 8-byte word. If a word's value falls inside an executable region from the maps table (a region with `x` in its permissions), it is a candidate return address.
+
+Each candidate is validated by checking whether the bytes immediately before it look like a `call` instruction. The tool checks for the following x86-64 call encodings:
+
+| Bytes before return address | Instruction | Example |
+|---|---|---|
+| `E8 xx xx xx xx` (5 bytes) | `call rel32` | Direct call |
+| `FF /2` (2 bytes) | `call r/m64` | `call rax` |
+| `FF /2 ModRM` (3 bytes) | `call [mem]` | `call [rbp-8]` |
+| `REX FF /2` (3 bytes) | `call r/m64` | `call r8` |
+| `FF 15 xx xx xx xx` (6 bytes) | `call [rip+rel32]` | PLT stub, glibc |
+| `FF /2 disp32` (6 bytes, mod=10) | `call [reg+disp32]` | `call [rax+offset]` |
+| `REX FF 15 xx xx xx xx` (7 bytes) | REX `call [rip+rel32]` | REX PLT stub |
+| `REX FF /2 disp32` (7 bytes, mod=10) | REX `call [reg+disp32]` | REX indirect |
+
+The `FF 15 rel32` form is particularly important — it is how every PLT stub and most glibc internal calls are encoded in position-independent code. Without it, frames from any dynamically linked function would be silently dropped.
 
 ### Step 10: Symbol resolution
 
-For each candidate return address that points to a mapped binary file (a path starting with `/`), the tool calls `addr2line` to translate the file offset to a function name and source file:line.
+For each frame that points into a mapped binary file (a path starting with `/`), the tool calls `addr2line` to translate the file-relative offset to a function name and source file:line.
 
-This requires the binary to have been compiled with debug information (`-g`). Without it, `addr2line` returns `??` and `??:0`, which the tool displays as is. Paths containing single quotes are skipped to avoid shell injection in the `popen` call.
+The offset passed to `addr2line` is `(virtual_address - vma_start) + file_offset`, where `file_offset` comes from the maps table. This correctly handles the case where only part of a binary is mapped.
+
+Symbol resolution requires the binary to have been compiled with debug information (`-g`). Without it, `addr2line` returns `??` and `??:0`.
+
+### Step 11: ELF core file (optional, `-o FILE`)
+
+When the `-o` flag is given, the tool writes a synthetic ELF core file to the specified path. The file can be loaded into GDB for interactive inspection.
+
+**Layout of the generated core:**
+
+```
+ELF Header (ET_CORE, EM_X86_64)
+Program Headers:
+  PT_NOTE  — one entry pointing at the note blob
+  PT_LOAD  — one entry per readable VMA from /proc/[pid]/maps
+Note blob:
+  NT_PRSTATUS  — pid, ppid, and registers
+                 (full 27-register ptrace snapshot for S/T-state;
+                  RIP + RSP + syscall args from /proc/[pid]/syscall for D-state)
+  NT_PRPSINFO  — comm, cmdline
+  NT_FILE      — maps each virtual address range to its backing file and page offset
+PT_LOAD data   — raw memory dumps read from /proc/[pid]/mem
+```
+
+The NT_FILE note is what allows GDB to locate shared library debug information on disk. Without it, GDB would not know which `.so` file backs each anonymous-looking memory region, and backtraces into libc or other libraries would show as `??`.
+
+The core is generated using a two-pass design. The first pass (`compute_layout`) probes every VMA with a one-byte `pread` to determine which are actually readable, and computes the exact file offset of every section before any writing begins. The second pass writes the file in a single sequential forward pass with no seeking. If a VMA becomes unreadable between the two passes (for example because the process exited), that region is written as zeros.
+
+**Loading in GDB:**
+
+```bash
+gdb /path/to/binary output.core
+(gdb) bt
+(gdb) info registers
+(gdb) x/40gx $rsp
+```
 
 ---
 
@@ -218,11 +293,6 @@ System Call Information:
    IP:        0x7f56a66f2687
    SP:        0x7ffe6acee8f0
 
-Registers (via ptrace):
-   RIP: 0x7f56a66f2687
-   RSP: 0x7ffe6acee8f0
-   RBP: 0x7ffe6aceeef0
-
 Blocking File Descriptor:
    FD:        3
    Path:      /tmp/fuse_mount/trap.txt
@@ -250,7 +320,7 @@ Memory Regions:
    0x7f56a66d0000-0x7f56a66f3000  /usr/lib/x86_64-linux-gnu/libc.so.6
    0x7ffe6acce000-0x7ffe6acef000  [stack]
 
-User Stack Trace (ptrace RSP):
+User Stack Trace (syscall SP):
    [0]  0x7f56a66f2687  /usr/lib/x86_64-linux-gnu/libc.so.6
          function: __GI___read
          source: ../sysdeps/unix/sysv/linux/read.c:26  (+0x22687)
@@ -259,7 +329,7 @@ User Stack Trace (ptrace RSP):
          source: cat.c:140  (+0xa32)
 ```
 
-The "User Stack Trace" header shows the source of the starting address in parentheses. When ptrace succeeded, it says `(ptrace RSP)`. When the tool fell back to the syscall file, it says `(syscall SP)`.
+The "User Stack Trace" header shows the source of the starting address. When ptrace succeeded (S/T-state), it says `ptrace RSP`. When the tool used the syscall file (D-state), it says `syscall SP`.
 
 Reading this output top to bottom tells a complete story. The process `cat` is in D-state, sleeping in `request_wait_answer` (a FUSE kernel function). It is stuck in a `read` syscall on fd 3, which resolves to `/tmp/fuse_mount/trap.txt`. The kernel stack confirms the path from the FUSE page fault handler through the VFS layer. The user stack shows it entered the kernel via `__GI___read` in libc, called from `main`.
 
@@ -333,12 +403,32 @@ void print_diagnostics(const process_diagnostics_t *diag);
 ### Registers (ptrace)
 
 ```c
-int read_registers_ptrace(pid_t pid, uint64_t *rip, uint64_t *rsp, uint64_t *rbp);
+int read_registers_ptrace(pid_t pid, elf_gregset_t *regs_out);
 ```
 
-Attaches to the process with `PTRACE_ATTACH`, waits for it to stop with `waitpid`, reads the full register set with `PTRACE_GETREGS`, and immediately detaches with `PTRACE_DETACH`. Only called from `read_full_diagnostics()` when the process state is `S` or `T`. Returns `0` on success. Returns `-1` if permission is denied, if the process no longer exists, or if the process transitioned into D-state between the state check and the attach attempt (in which case waitpid would block, but the implementation treats the failed waitpid as an error and detaches safely).
+Attaches to the process with `PTRACE_ATTACH`, waits for it to stop with `waitpid`, reads the full 27-register set with `PTRACE_GETREGS`, stores them into `regs_out` indexed by `elfreg_index_t`, and immediately detaches. Only called from `read_full_diagnostics()` when the process state is `S` or `T`. Returns `-1` if permission is denied, the process no longer exists, or the process transitioned into D-state between the state check and the attach attempt.
 
-The results are stored in `diag->ptrace_rip`, `diag->ptrace_rsp`, and `diag->ptrace_rbp`. The `diag->ptrace_valid` flag is set to `1` only on success.
+The results are stored in `diag->ptrace_regs`. The `diag->ptrace_valid` flag is set to `1` only on success.
+
+### User Stack Unwinding
+
+```c
+int read_user_stack_libunwind(pid_t pid, process_diagnostics_t *diag);
+int read_user_stack(pid_t pid, process_diagnostics_t *diag);
+void resolve_symbol(const char *binary_path, uint64_t offset,
+                    char *func_out, size_t func_len,
+                    char *src_out, size_t src_len);
+```
+
+`read_full_diagnostics` calls `read_user_stack_libunwind` first. If it returns an error or produces fewer than three frames, `read_user_stack` (the heuristic scanner) runs instead and overwrites the result.
+
+On failure, `diag->user_stack.reason` is set to one of:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `USER_STACK_ERR_PERM` | 1 | Permission denied opening `/proc/[pid]/mem`. Run as root or with `CAP_SYS_PTRACE`. |
+| `USER_STACK_ERR_UNAVAIL` | 2 | Memory unreadable or the process vanished between steps. |
+| `USER_STACK_ERR_NO_SP` | 3 | Stack pointer is zero. The process was not in a syscall when sampled and ptrace also failed, so there is no starting point for unwinding. |
 
 ### Lock Conflict Detection
 
@@ -346,27 +436,15 @@ The results are stored in `diag->ptrace_rip`, `diag->ptrace_rsp`, and `diag->ptr
 int read_lock_conflict(pid_t pid, process_diagnostics_t *diag);
 ```
 
-Checks whether the current syscall is `fcntl` (nr=72) or `flock` (nr=73) and if not it returns immediately. If so, it resolves the file descriptor from args[0] via `/proc/[pid]/fd/N`, calls `stat()` to obtain the file's device major:minor and inode, then scans `/proc/locks` line by line looking for an entry with a matching major:minor:inode triple held by a different PID.
+Checks whether the current syscall is `fcntl` (nr=72) or `flock` (nr=73) and if not it returns immediately. If so, it resolves the file descriptor from args[0] via `/proc/[pid]/fd/N`, calls `stat()` to obtain the file's device major:minor and inode, then scans `/proc/locks` line by line looking for an entry with a matching major:minor:inode triple held by a different PID. On finding a conflict, sets `diag->lock_conflict.found = 1` and fills in `holder_pid`, `lock_type`, `access`, and `path`.
 
-On finding a conflict, sets `diag->lock_conflict.found = 1` and fills in `holder_pid`, `lock_type`, `access`, and `path`. Returns `0` on success (conflict found or syscall not applicable), `-1` if `/proc/locks` cannot be opened or the fd symlink cannot be resolved.
-
-### Memory Maps and User Stack
+### ELF Core File
 
 ```c
-int read_process_maps(pid_t pid, process_maps_t *maps);
-int read_user_stack(pid_t pid, process_diagnostics_t *diag);
-void resolve_symbol(const char *binary_path, uint64_t offset,
-                    char *func_out, size_t func_len,
-                    char *src_out, size_t src_len);
+int write_core_file(pid_t pid, process_diagnostics_t *diag, const char *outpath);
 ```
 
-On failure, `diag->user_stack.reason` is set to one of:
-
-| Constant                 | Value | Meaning                                                                                                                                                                         |
-| ------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `USER_STACK_ERR_PERM`    | 1     | Permission denied opening `/proc/[pid]/mem`. Run as root or with `CAP_SYS_PTRACE`.                                                                                              |
-| `USER_STACK_ERR_UNAVAIL` | 2     | Memory unreadable or the process vanished between steps.                                                                                                                        |
-| `USER_STACK_ERR_NO_SP`   | 3     | Stack pointer is zero. The process was not in a syscall when sampled, and ptrace register reading also failed or was not attempted, so there is no starting point for the scan. |
+Writes a GDB-loadable ELF core file to `outpath`. Requires that `read_full_diagnostics` has already been called for the same PID. For D-state processes the register snapshot in the core contains only RIP, RSP, and the syscall arguments. For S/T-state processes it contains the full 27-register ptrace snapshot.
 
 ---
 
@@ -378,13 +456,19 @@ On failure, `diag->user_stack.reason` is set to one of:
 
 **Privileges required for kernel stack, user stack, and ptrace.** Reading `/proc/[pid]/stack` and `/proc/[pid]/mem` both require root or `CAP_SYS_PTRACE`. Attaching via ptrace for register reads on S/T-state processes requires the same. The kernel enforces this.
 
-**Symbol resolution requires debug info.** `resolve_symbol` calls `addr2line` for each frame. Function names and source lines only appear for binaries compiled with `-g`. Without debug information, every frame shows as `??` / `??:0`. Paths containing a single quote character are skipped entirely to avoid shell injection.
+**Symbol resolution requires debug info.** `resolve_symbol` calls `addr2line` for each frame. Function names and source lines only appear for binaries compiled with `-g`. Without debug information, every frame shows as `??` / `??:0`.
 
-**User stack is a heuristic.** Scanning raw stack memory for values that fall in executable regions is an approximation, not proper stack unwinding. It can include false positives (arbitrary values that happen to point into code) and miss frames that the compiler stored in registers rather than on the stack.
+**D-state user stack is best-effort.** For D-state processes, only RSP and RIP are available from `/proc/[pid]/syscall`. libunwind may stop early if DWARF CFI rules for a frame require a callee-saved register (RBP, RBX, R12–R15) that was not captured. When this happens, the heuristic scanner takes over and scans raw stack memory for values that look like return addresses. The heuristic can include false positives and miss frames the compiler kept in registers rather than spilling to the stack.
 
-**ptrace cannot attach to D-state processes.** This is why the tool reads `/proc` instead of using a debugger-style approach for D-state. `SIGSTOP` cannot be delivered to a process in uninterruptible sleep, so `ptrace(PTRACE_ATTACH, ...)` blocks indefinitely. For S-state and T-state processes, ptrace works normally and the tool uses it to capture live register values.
+**Only the main thread's stack is read.** `/proc/[pid]/syscall` and `/proc/[pid]/mem` target the process's main thread. For multi-threaded programs, other threads may have their own stacks and their own blocking syscalls. Diagnosing individual threads requires reading `/proc/[pid]/task/[tid]/syscall` per thread, which this tool does not do.
 
-**Lock conflict detection covers only advisory file locks.** The `flock` and `fcntl` locking mechanisms are advisory: the kernel tracks them and exposes them in `/proc/locks`. Futex-based locks (pthreads mutexes, C++ `std::mutex`, Go sync primitives) operate through a completely different kernel mechanism. They do not appear in `/proc/locks` and require inspecting the futex wait queue directly, which is not accessible through `/proc`. If a process is deadlocked on a mutex rather than a file lock, this tool will not identify the holder.
+**ptrace cannot attach to D-state processes.** `SIGSTOP` cannot be delivered to a process in uninterruptible sleep, so `ptrace(PTRACE_ATTACH, ...)` blocks indefinitely. This is why the full register snapshot is unavailable for D-state, and why libunwind's DWARF unwinding is limited to RSP and RIP in that case.
+
+**Lock conflict detection covers only advisory file locks.** The `flock` and `fcntl` locking mechanisms appear in `/proc/locks`. Futex-based locks (pthreads mutexes, C++ `std::mutex`, Go sync primitives) operate through a different kernel mechanism and do not appear there. If a process is deadlocked on a mutex rather than a file lock, this tool will not identify the holder.
+
+**ELF core registers are incomplete for D-state.** Because ptrace cannot attach to a D-state process, the NT_PRSTATUS note in the core file contains only the registers available from `/proc/[pid]/syscall`: RIP, RSP, and the six syscall argument registers. GDB can still load and inspect memory, but register-dependent commands like `bt` may produce incomplete results compared to a core from a process that was cleanly stopped.
+
+**libunwind UPT struct ABI dependency.** `src/unwind_reader.c` uses an internal layout assumption: that `struct UPT_info` in libunwind has `pid_t` as its first member. This is not part of libunwind's public API. The code is verified against libunwind 1.x. A future libunwind release that changes this layout would break unwinding silently with no compile-time warning.
 
 ---
 
