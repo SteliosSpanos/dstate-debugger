@@ -68,7 +68,7 @@ static const char *syscall_names[] = {
 
 const char *syscall_name(long nr)
 {
-	static char unknown[32];
+	char unknown[32];
 
 	if (nr < 0)
 		return "(not in syscall)";
