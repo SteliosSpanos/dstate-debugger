@@ -6,7 +6,7 @@ SRCS = src/detector.c src/proc_reader.c src/proc_utils.c src/ptrace_reader.c src
 all: dstate
 
 dstate: main.c $(SRCS)
-	$(CC) $(CFLAGS) -o $@ $^ -lunwind -lunwind-x86_64
+	$(CC) $(CFLAGS) -o $@ $^ -lunwind -lunwind-x86_64 -lunwind-ptrace
 
 monitor: test/monitor.c $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $^
