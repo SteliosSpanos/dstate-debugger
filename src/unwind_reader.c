@@ -13,19 +13,6 @@
 
 #include "../include/dstate.h"
 
-/*
- * unwind_ctx_t is deliberately laid out so its first field is pid_t pid.
- * _UPT_find_proc_info passes its void *arg to internal libunwind functions
- * (e.g. _Ux86_64_get_elf_image) which cast it to struct UPT_info * and read
- * only the first field: pid.  Because we share the same pointer for both
- * unw_init_remote and _UPT_find_proc_info, every access_mem callback below
- * receives &ctx (not an alien UPT_info pointer) and can read mem_fd correctly.
- *
- * FRAGILE: relies on struct UPT_info having pid_t as its first member —
- * an internal libunwind detail, not part of the public API.  Verified against
- * libunwind 1.x.  If a future release adds a field before pid, this breaks
- * silently with no compile-time warning.
- */
 typedef struct
 {
     pid_t pid;
