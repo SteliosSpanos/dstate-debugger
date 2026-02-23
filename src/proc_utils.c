@@ -52,7 +52,7 @@ ssize_t read_proc_line(const char *path, char *buffer, size_t bufsize)
 
     fclose(fp);
 
-    ssize_t len = strlen(buffer);
+    ssize_t len = (ssize_t)strlen(buffer);
     if (len > 0 && buffer[len - 1] == '\n')
     {
         buffer[len - 1] = '\0';
