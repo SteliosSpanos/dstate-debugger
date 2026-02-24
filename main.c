@@ -60,6 +60,12 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	if (outfile && target_pid <= 0)
+	{
+		fprintf(stderr, "Error: -o requires -p PID\n");
+		return 1;
+	}
+
 	if (target_pid > 0)
 	{
 		process_diagnostics_t diag;
