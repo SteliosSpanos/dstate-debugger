@@ -94,7 +94,8 @@ make            # builds dstate (main tool)
 make unit-test  # builds and runs unit tests
 make monitor    # builds test monitor
 make trap_fs    # builds FUSE test filesystem (requires libfuse-dev)
-make test       # full test: trap_fs + monitor + dstate (requires sudo)
+make test           # scan test: trap a process, run dstate scanner (requires sudo)
+make test-monitor   # demonstrates D-state and SIGTERM immunity using monitor
 make test-pid   # test the -p flag: trap a process, diagnose by PID
 make kill       # kill trap_fs and unmount FUSE
 make clean      # remove binaries and unmount FUSE
@@ -152,7 +153,7 @@ Having the full register set rather than just RSP and RIP makes a significant di
 
 ### Step 4: Blocking file descriptor resolution
 
-Some syscalls operate on a file descriptor: `read`, `write`, `ioctl`, `pread64`, `pwrite64`, `readv`, `writev`, `connect`, `accept`, `accept4`, `sendto`, `recvfrom`, `fcntl`, `flock`. For these, the first argument (args[0]) is the fd number.
+Some syscalls operate on a file descriptor: `read`, `write`, `ioctl`, `pread64`, `pwrite64`, `readv`, `writev`, `connect`, `accept`, `accept4`, `sendto`, `recvfrom`, `fcntl`, `flock`. For these, the first argument (args[0]) is the fd number. This check is performed only for D-state processes. S-state processes may be in the middle of any I/O operation without being genuinely stuck, so reporting a blocking FD for them would be misleading.
 
 The tool resolves that fd by reading the symbolic link `/proc/[pid]/fd/N`. This symbolic link points to the actual file, socket, or device the process has open. This is how the tool can tell you "blocked on `/tmp/fuse_mount/trap.txt`" instead of just "fd 3".
 
@@ -368,9 +369,12 @@ sudo ./dstate
 **Automated:**
 
 ```bash
-make test       # runs trap_fs + monitor + dstate together (requires sudo)
-make test-pid   # same, but uses -p to diagnose by a specific PID
+make test           # traps a process, runs dstate scanner — verifies full diagnostics output (requires sudo)
+make test-pid       # same, but diagnoses by specific PID using the -p flag (requires sudo)
+make test-monitor   # runs monitor standalone — demonstrates that SIGTERM is ignored in D-state
 ```
+
+Note: `make test` and `make test-monitor` are intentionally separate. Running monitor alongside dstate in the same session causes interference because trap_fs runs single-threaded (-s): the FUSE daemon is busy handling the first blocked read and cannot process the monitor's child request, which causes the monitor's child to behave unpredictably.
 
 ---
 
