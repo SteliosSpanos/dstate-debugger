@@ -1,22 +1,18 @@
 # dstate-debugger
 
-## Overview
+A Linux tool for diagnosing processes stuck in **D-state** (uninterruptible sleep). Scans `/proc` to find blocked processes, reads kernel stack traces, identifies the blocking syscall and file descriptor, detects file lock conflicts, unwinds the user-space call stack, and can write a synthetic ELF core file for GDB.
 
-A Linux debugging tool that detects and diagnoses processes stuck in D-state (uninterruptible sleep). It scans `/proc` to find blocked processes, reads their kernel stack traces, identifies what syscall they are waiting in, and reports the exact file path they are blocked on. For S-state and T-state processes it supplements `/proc` with live CPU register reads via ptrace. It detects file lock conflicts, identifying which other process holds the lock blocking the target. It unwinds the user-space call stack using libunwind with a heuristic fallback. It can also produce a synthetic ELF core file that GDB can load directly.
-
-Written in C99 for x86-64 Linux. Runtime dependencies: glibc and libunwind.
+Written in **C99** for x86-64 Linux. Dependencies: glibc and libunwind.
 
 ---
 
-## Why does D-state matter?
+## Why D-state?
 
-When a Linux process enters D-state, the kernel has suspended it inside a system call. The process is waiting for something (usually I/O) and it cannot respond to signals until that wait completes. Not even `SIGKILL` works.
+When a process enters D-state, the kernel has suspended it inside a system call waiting for something (usually I/O). It cannot respond to signals, not even `SIGKILL`.
 
-This creates a diagnostic problem. Traditional debuggers like `gdb` attach to processes using `ptrace`. `ptrace` requires delivering `SIGSTOP` to the target process first. A D-state process cannot receive signals. So `ptrace` fails entirely.
+Traditional debuggers attach via ptrace, which requires delivering `SIGSTOP`. A D-state process cannot receive signals, so ptrace fails entirely. This tool reads everything from `/proc`, no signals, no ptrace, no process cooperation required.
 
-This tool works around that limitation. It reads everything it needs from `/proc`, which is a virtual filesystem the kernel maintains for exactly this purpose. No signals, no ptrace, no process cooperation required.
-
-For S-state (interruptible sleep) and T-state (stopped) processes, the situation is different. Those processes can receive signals, so ptrace works. The tool takes advantage of this: when a process is in S or T-state, it supplements the `/proc` reads with a live ptrace register snapshot. This is useful because `/proc/[pid]/syscall` only captures registers when the process is actually inside a syscall. If it is not, that file returns "running" or "-1" and there is no stack pointer to start unwinding from. The ptrace snapshot fills that gap.
+For **S-state** and **T-state** processes, ptrace works normally. The tool takes advantage of this: it supplements `/proc` reads with a live ptrace register snapshot, which fills the gap when `/proc/[pid]/syscall` returns no data (the process is not currently inside a syscall).
 
 ---
 
@@ -44,42 +40,10 @@ dstate-debugger/
 
 ---
 
-## Architecture
-
-The tool is built in three layers. Each layer depends only on the one below it.
-
-**Layer 1: `src/proc_utils.c`**
-
-All raw `/proc` file I/O lives here: opening files, reading their contents, following symlinks, and constructing paths like `/proc/1234/stat`. Every other module goes through this layer. Nothing else opens `/proc` files directly.
-
-**Layer 2: `src/detector.c`**
-
-Scans `/proc` to find processes in D-state. Opens the `/proc` directory, iterates every numeric entry (each one is a PID), reads its `stat` file, and checks the state field. Returns a dynamically-allocated array that doubles its capacity whenever it fills. Entry point: `find_dstate_processes()`.
-
-**Layer 3: `src/proc_reader.c`**
-
-Reads deep diagnostics for a single PID: stat, wchan, syscall, kernel stack, maps, and process memory. Contains the x86-64 syscall-number-to-name table. Entry point: `read_full_diagnostics()`.
-
-Headers in `include/dstate.h` define all shared data structures and function declarations. `include/proc_utils.h` exposes the utility interface.
-
-**Complementary: `src/ptrace_reader.c`**
-
-Not a fourth layer in the `/proc` pipeline. A separate observation method that applies only when the process state allows it. The three-layer `/proc` pipeline handles everything for D-state processes. For S/T-state processes, `ptrace_reader.c` adds a full 27-register snapshot that `/proc` cannot provide when the process is not currently inside a syscall. The rest of the pipeline (maps, user stack unwinding, core file) consumes those registers the same way it would consume values read from `/proc/[pid]/syscall`.
-
-**Complementary: `src/unwind_reader.c`**
-
-Performs user-space stack unwinding using libunwind. Works on D-state processes by reading memory directly from `/proc/[pid]/mem` instead of using ptrace. When full registers are available (S/T-state), libunwind can walk every frame accurately using DWARF CFI data from the binaries. For D-state, only RSP and RIP are available from `/proc/[pid]/syscall`, so unwinding may stop early when DWARF rules require a callee-saved register that was never captured.
-
-**Complementary: `src/core_writer.c`**
-
-Builds a synthetic ELF core file from a live process. The core can be loaded into GDB with the original binary for post-mortem inspection even though the process is still running. Uses a two-pass design: the first pass probes every VMA and computes all file offsets before writing begins; the second pass writes the entire file in one sequential forward pass.
-
----
-
 ## Dependencies
 
-- **Build and runtime**: glibc and libunwind.
-- **Testing only**: `libfuse-dev` is required to build the FUSE test filesystem.
+- **Build and runtime**: glibc and libunwind
+- **Testing only**: libfuse-dev (for the FUSE test filesystem)
 
 ```bash
 sudo apt-get install libunwind-dev libfuse-dev
@@ -89,18 +53,17 @@ sudo apt-get install libunwind-dev libfuse-dev
 
 ## Build
 
-```bash
-make            # builds dstate (main tool)
-make unit-test  # builds and runs unit tests
-make monitor    # builds test monitor
-make trap_fs    # builds FUSE test filesystem (requires libfuse-dev)
-make test           # scan test: trap a process, run dstate scanner (requires sudo)
-make test-monitor   # demonstrates D-state and SIGTERM immunity using monitor
-make test-pid   # test the -p flag: trap a process, diagnose by PID
-make kill       # kill trap_fs and unmount FUSE
-make clean      # remove binaries and unmount FUSE
-make help       # show all targets and usage
-```
+| Target | Description | Requires sudo |
+|---|---|---|
+| `make` | Build `dstate` | No |
+| `make unit-test` | Build and run unit tests | No |
+| `make monitor` | Build test monitor | No |
+| `make trap_fs` | Build FUSE test filesystem | No |
+| `make test` | Full integration test: trap a process, run scanner | Yes |
+| `make test-pid` | Same, but diagnoses by PID (`-p` flag) | Yes |
+| `make test-monitor` | Demonstrates D-state and SIGTERM immunity | No |
+| `make kill` | Kill trap_fs and unmount FUSE | No |
+| `make clean` | Remove binaries and unmount FUSE | No |
 
 ---
 
@@ -113,95 +76,65 @@ sudo ./dstate -p PID -o FILE   # diagnose and write an ELF core file
 ./dstate -h                    # show help
 ```
 
-Root or `CAP_SYS_PTRACE` is required for three things: reading `/proc/[pid]/stack` (kernel stack trace), reading `/proc/[pid]/mem` (user stack unwinding and core generation), and attaching via ptrace to read registers on S/T-state processes. All other diagnostics (syscall identification, fd resolution, wchan, memory map, basic stat) work without elevated privileges.
+Root or `CAP_SYS_PTRACE` is required for: `/proc/[pid]/stack` (kernel stack), `/proc/[pid]/mem` (user stack unwinding and core generation), and ptrace register reads (S/T-state only). All other diagnostics work without elevated privileges.
 
-### Loading a core file in GDB
+---
 
-```bash
-gdb /path/to/original/binary output.core
-(gdb) bt
-(gdb) x/40gx $rsp
-```
+## Architecture
 
-GDB uses the NT_FILE note inside the core to find shared library locations on disk, so backtraces into libc and other libraries resolve correctly even in stripped builds.
+| Module | Responsibility |
+|---|---|
+| `proc_utils.c` | Base layer: raw `/proc` I/O, symlink reads, path building. Every other module goes through this. |
+| `detector.c` | Scans `/proc`, filters by state `D`, returns a capacity-doubling dynamic array. Entry point: `find_dstate_processes()`. |
+| `proc_reader.c` | Per-PID diagnostics: stat, wchan, syscall, kernel stack, maps, user stack heuristic, x86-64 syscall name table. Entry point: `read_full_diagnostics()`. |
+| `ptrace_reader.c` | Attaches ptrace, reads all 27 registers via `PTRACE_GETREGS`, detaches. Only called for S/T-state processes. |
+| `unwind_reader.c` | User stack unwinding via libunwind. Reads `/proc/[pid]/mem` directly — no ptrace needed, works on D-state. |
+| `core_writer.c` | Builds a synthetic ELF core file (two-pass design). Entry point: `write_core_file()`. |
 
 ---
 
 ## How It Works
 
-Here is what happens at each step, and why each step is necessary.
+### Detection and basic data collection
 
-### Step 1: Detection
+| Step | Reads from | Gives you |
+|---|---|---|
+| 1. Detection | `/proc/[pid]/stat` field 3 | Processes in state `D` |
+| 2. Syscall ID | `/proc/[pid]/syscall` | Syscall nr + 6 args + RSP + RIP |
+| 3. Registers | ptrace `PTRACE_GETREGS` | Full 27-register snapshot (S/T-state only) |
+| 4. Blocking FD | `/proc/[pid]/fd/N` symlink | File/socket/device the process has open |
+| 5. Kernel stack | `/proc/[pid]/stack` | Live kernel call chain (needs root) |
+| 6. Wait channel | `/proc/[pid]/wchan` | Single kernel function name where process sleeps |
+| 7. Memory map | `/proc/[pid]/maps` | All VMAs: address, permissions, file offset, backing file |
 
-The tool opens `/proc` and iterates every directory whose name is a number. Each one is a running process. It reads `/proc/[pid]/stat` and checks the state field (the third field, after PID and command name). A value of `D` means the process is in uninterruptible sleep.
+**Step 3 is skipped entirely for D-state.** Delivering `SIGSTOP` requires signal reception which is impossible in uninterruptible sleep. Calling `ptrace(PTRACE_ATTACH)` on a D-state process would block the tool indefinitely waiting for a stop that never arrives.
 
-### Step 2: Syscall identification
+**Step 4 is only checked for D-state processes.** For syscalls that take a file descriptor as their first argument (`read`, `write`, `ioctl`, `pread64`, `pwrite64`, `readv`, `writev`, `connect`, `accept`, `accept4`, `sendto`, `recvfrom`, `fcntl`, `flock`), args[0] is resolved via the `/proc/[pid]/fd/N` symlink to get the actual path. Doing this for S-state processes would be misleading since they may be in the middle of any I/O without being genuinely stuck.
 
-The tool reads `/proc/[pid]/syscall`. This file contains the current syscall number, six argument registers, the stack pointer, and the instruction pointer, all in one line.
+### File lock conflict detection
 
-The syscall number is mapped to a name using a static table specific to x86-64 (for example, nr=0 is `read`, nr=1 is `write`, nr=72 is `fcntl`, nr=73 is `flock`). If the number is not in the table, the tool falls back to `syscall_N` as a placeholder.
+If the blocking syscall is `fcntl` (nr=72) or `flock` (nr=73), the process is waiting to acquire a file lock. The tool identifies the holder:
 
-This tells you exactly what the kernel was doing when the process froze.
+1. Resolves args[0] (the fd) via `/proc/[pid]/fd/N` to a path.
+2. Calls `stat()` to get the file's device major:minor and inode.
+3. Scans `/proc/locks` line by line for a matching `major:minor:inode` held by a different PID.
+4. Stores `holder_pid`, `lock_type`, `access`, and `path` in `diag->lock_conflict`.
 
-### Step 3: Register reading via ptrace (S/T-state only)
+Device + inode uniquely identifies a file regardless of how it was opened (hard links, bind mounts, different paths). This is why `stat()` is used rather than comparing paths directly.
 
-For a D-state process, this step is skipped entirely. The kernel will not deliver `SIGSTOP` to a process in uninterruptible sleep, so `ptrace(PTRACE_ATTACH)` would block the tool itself indefinitely waiting for a stop that never arrives. There is no safe way to ptrace a D-state process.
+### User stack unwinding
 
-For S-state and T-state processes, ptrace is safe. The tool attaches, waits for the process to stop, reads all 27 CPU registers using `PTRACE_GETREGS`, and immediately detaches. The full register set is stored in `diag->ptrace_regs` as an `elf_gregset_t` array, indexed by the `elfreg_index_t` enum defined in `dstate.h` (`ELFREG_RIP`, `ELFREG_RSP`, `ELFREG_RBP`, etc.). The `ptrace_valid` flag records whether this step succeeded.
-
-Having the full register set rather than just RSP and RIP makes a significant difference for stack unwinding. DWARF CFI rules in compiled binaries frequently describe frame recovery in terms of callee-saved registers (RBP, RBX, R12–R15). With the full snapshot, libunwind can follow those rules precisely for every frame.
-
-### Step 4: Blocking file descriptor resolution
-
-Some syscalls operate on a file descriptor: `read`, `write`, `ioctl`, `pread64`, `pwrite64`, `readv`, `writev`, `connect`, `accept`, `accept4`, `sendto`, `recvfrom`, `fcntl`, `flock`. For these, the first argument (args[0]) is the fd number. This check is performed only for D-state processes. S-state processes may be in the middle of any I/O operation without being genuinely stuck, so reporting a blocking FD for them would be misleading.
-
-The tool resolves that fd by reading the symbolic link `/proc/[pid]/fd/N`. This symbolic link points to the actual file, socket, or device the process has open. This is how the tool can tell you "blocked on `/tmp/fuse_mount/trap.txt`" instead of just "fd 3".
-
-### Step 5: Kernel stack trace
-
-The tool reads `/proc/[pid]/stack`. This file contains the live kernel call stack for the process: the exact chain of kernel functions that led to the current wait. It is the most direct answer to "what is the kernel doing right now?"
-
-Reading this file requires root or `CAP_SYS_PTRACE`. Without privileges, the tool prints a message explaining why this section is unavailable.
-
-### Step 6: Wait channel
-
-The tool reads `/proc/[pid]/wchan`. This is a single string: the name of the kernel function where the process is currently sleeping. It is a one-line summary of the kernel stack.
-
-For example, `request_wait_answer` identifies FUSE request waiting. `nfs_wait_bit_killable` identifies NFS I/O waiting.
-
-### Step 7: Memory map parsing
-
-The tool reads `/proc/[pid]/maps`. This file lists every virtual memory region the process has: start address, end address, permissions (`rwxp`), file offset, and the backing file (or anonymous if there is none).
-
-The tool parses this into a table of `map_entry_t` structs. The file offset field is important: when a binary is partially mapped (which is the normal case, the kernel maps only the needed segments), the offset tells the tool where in the file on disk a given virtual address corresponds to. This is used both for symbol resolution and for the NT_FILE note in the core file.
-
-### Step 8: File lock conflict detection
-
-If the current syscall is `fcntl` (nr=72) or `flock` (nr=73), the process is attempting to acquire a file lock and is blocked because someone else holds it. The tool can identify exactly who.
-
-First it resolves the file descriptor (args[0]) to a path using `/proc/[pid]/fd/N`. Then it calls `stat()` on that path to get the file's device major:minor number and inode number. These three numbers together uniquely identify a file on the system. Two processes can have the same file open under completely different paths (hard links, bind mounts), but the inode and device numbers will always be identical.
-
-The tool then reads `/proc/locks`. This is a kernel-maintained file listing every advisory and mandatory lock currently held anywhere on the system. Each line contains the lock type (FLOCK or POSIX), advisory or mandatory status, access mode (READ or WRITE), the PID of the lock holder, and the device major:minor and inode of the locked file.
-
-The tool scans every line for a matching major:minor:inode triple where the holder PID is different from the waiting process. When a match is found, the holder PID, lock type, access mode, and file path are stored in `diag->lock_conflict`. At print time, the holder's command name is looked up by reading `/proc/[holder_pid]/comm`.
-
-### Step 9: User stack unwinding
-
-User stack unwinding uses two methods in sequence. libunwind runs first. If it fails completely or returns fewer than three frames, the heuristic scanner runs instead.
+Two methods run in sequence. libunwind runs first; if it fails or returns fewer than three frames, the heuristic scanner takes over.
 
 **libunwind (`src/unwind_reader.c`)**
 
-libunwind reads DWARF CFI (Call Frame Information) data embedded in every compiled binary. DWARF CFI is a precise machine-readable description of how to recover the previous frame from any instruction: which register holds the return address, where callee-saved registers were spilled onto the stack, and so on. This is the same information GDB uses.
+Reads DWARF CFI data from binaries and walks frames precisely, the same method GDB uses. Reads process memory from `/proc/[pid]/mem` directly without attaching, so it works on D-state processes.
 
-The unwinder reads process memory directly from `/proc/[pid]/mem` without attaching to the process. This works for D-state processes. For D-state, the starting point is RSP and RIP from `/proc/[pid]/syscall`. For S/T-state, all 27 registers from ptrace are available as the starting state.
-
-The limitation for D-state is that DWARF rules sometimes say things like "to find the return address, look at what was in RBP when you entered this function". If RBP was never captured (because ptrace failed), libunwind reports the register as unavailable and stops. This is why the fallback exists.
+Starting state for D-state: only RSP and RIP from `/proc/[pid]/syscall`. Starting state for S/T-state: all 27 registers from ptrace. The full register set matters because DWARF CFI rules frequently describe frame recovery in terms of callee-saved registers (RBP, RBX, R12–R15). Without them, libunwind stops early when it hits a frame whose recovery rule requires a register that was never captured.
 
 **Heuristic scanner (`src/proc_reader.c`)**
 
-Opens `/proc/[pid]/mem`, reads 2048 bytes from the stack pointer, and scans every 8-byte word. If a word's value falls inside an executable region from the maps table (a region with `x` in its permissions), it is a candidate return address.
-
-Each candidate is validated by checking whether the bytes immediately before it look like a `call` instruction. The tool checks for the following x86-64 call encodings:
+Reads 2048 bytes from the stack pointer via `/proc/[pid]/mem`, then scans every 8-byte word. If a word falls inside an executable VMA, it is a candidate return address. Each candidate is validated by checking whether the bytes immediately before it match a `call` instruction encoding:
 
 | Bytes before return address | Instruction | Example |
 |---|---|---|
@@ -214,39 +147,35 @@ Each candidate is validated by checking whether the bytes immediately before it 
 | `REX FF 15 xx xx xx xx` (7 bytes) | REX `call [rip+rel32]` | REX PLT stub |
 | `REX FF /2 disp32` (7 bytes, mod=10) | REX `call [reg+disp32]` | REX indirect |
 
-The `FF 15 rel32` form is particularly important — it is how every PLT stub and most glibc internal calls are encoded in position-independent code. Without it, frames from any dynamically linked function would be silently dropped.
+The `FF 15 rel32` form is critical since it covers every PLT stub and most glibc internal calls in position-independent code. Without it, any frame from a dynamically linked function would be silently dropped.
 
-### Step 10: Symbol resolution
+### Symbol resolution
 
-For each frame that points into a mapped binary file (a path starting with `/`), the tool calls `addr2line` to translate the file-relative offset to a function name and source file:line.
+For each frame pointing into a mapped binary, the tool calls `addr2line` with the file-relative offset: `(virtual_address - vma_start) + file_offset`. The `file_offset` comes from the maps table and correctly handles partially-mapped binaries. Requires the binary to be compiled with `-g`.
 
-The offset passed to `addr2line` is `(virtual_address - vma_start) + file_offset`, where `file_offset` comes from the maps table. This correctly handles the case where only part of a binary is mapped.
+### ELF core file (`-o FILE`)
 
-Symbol resolution requires the binary to have been compiled with debug information (`-g`). Without it, `addr2line` returns `??` and `??:0`.
+Writes a GDB-loadable ELF core from the live process using a two-pass design:
 
-### Step 11: ELF core file (optional, `-o FILE`)
+- **Pass 1 (`compute_layout`)**: probes every VMA with a one-byte `pread`, determines which are readable, and computes every file offset before writing begins.
+- **Pass 2**: writes the entire file in a single sequential forward pass with no seeking. Unreadable VMAs (process exited mid-write) are zeroed.
 
-When the `-o` flag is given, the tool writes a synthetic ELF core file to the specified path. The file can be loaded into GDB for interactive inspection.
-
-**Layout of the generated core:**
+**Core layout:**
 
 ```
 ELF Header (ET_CORE, EM_X86_64)
-Program Headers:
-  PT_NOTE  — one entry pointing at the note blob
-  PT_LOAD  — one entry per readable VMA from /proc/[pid]/maps
+  PT_NOTE  — note blob
+  PT_LOAD  — one per readable VMA
 Note blob:
-  NT_PRSTATUS  — pid, ppid, and registers
-                 (full 27-register ptrace snapshot for S/T-state;
-                  RIP + RSP + syscall args from /proc/[pid]/syscall for D-state)
+  NT_PRSTATUS  — pid, ppid, registers
+                 (full 27-reg ptrace snapshot for S/T-state;
+                  RIP + RSP + syscall args for D-state)
   NT_PRPSINFO  — comm, cmdline
-  NT_FILE      — maps each virtual address range to its backing file and page offset
-PT_LOAD data   — raw memory dumps read from /proc/[pid]/mem
+  NT_FILE      — maps each VMA to its backing file + page offset
+PT_LOAD data   — raw memory from /proc/[pid]/mem
 ```
 
-The NT_FILE note is what allows GDB to locate shared library debug information on disk. Without it, GDB would not know which `.so` file backs each anonymous-looking memory region, and backtraces into libc or other libraries would show as `??`.
-
-The core is generated using a two-pass design. The first pass (`compute_layout`) probes every VMA with a one-byte `pread` to determine which are actually readable, and computes the exact file offset of every section before any writing begins. The second pass writes the file in a single sequential forward pass with no seeking. If a VMA becomes unreadable between the two passes (for example because the process exited), that region is written as zeros.
+The NT_FILE note is what allows GDB to locate shared library debug information. Without it, GDB cannot match anonymous memory regions to `.so` files on disk and backtraces into libc show as `??`.
 
 **Loading in GDB:**
 
@@ -286,7 +215,6 @@ Command Line:
 
 Wait Channel (Kernel Function)
    request_wait_answer
-   (This is the kernel function where the process is stuck)
 
 System Call Information:
    Syscall:   read (nr = 0)
@@ -315,12 +243,6 @@ Kernel Stack Trace:
    [<0>] do_syscall_64+0x82/0x190
    [<0>] entry_SYSCALL_64_after_hwframe+0x76/0x7e
 
-Memory Regions:
-   0x55a1b2c00000-0x55a1b2c01000  /usr/bin/cat
-   0x7f56a65c5000-0x7f56a65c6000  (anonymous)
-   0x7f56a66d0000-0x7f56a66f3000  /usr/lib/x86_64-linux-gnu/libc.so.6
-   0x7ffe6acce000-0x7ffe6acef000  [stack]
-
 User Stack Trace (syscall SP):
    [0]  0x7f56a66f2687  /usr/lib/x86_64-linux-gnu/libc.so.6
          function: __GI___read
@@ -330,57 +252,52 @@ User Stack Trace (syscall SP):
          source: cat.c:140  (+0xa32)
 ```
 
-The "User Stack Trace" header shows the source of the starting address. When ptrace succeeded (S/T-state), it says `ptrace RSP`. When the tool used the syscall file (D-state), it says `syscall SP`.
-
-Reading this output top to bottom tells a complete story. The process `cat` is in D-state, sleeping in `request_wait_answer` (a FUSE kernel function). It is stuck in a `read` syscall on fd 3, which resolves to `/tmp/fuse_mount/trap.txt`. The kernel stack confirms the path from the FUSE page fault handler through the VFS layer. The user stack shows it entered the kernel via `__GI___read` in libc, called from `main`.
+Reading top to bottom: `cat` is in D-state, sleeping in `request_wait_answer` (a FUSE kernel function), stuck in a `read` syscall on fd 3 → `/tmp/fuse_mount/trap.txt`. The kernel stack confirms the path through the VFS layer. The user stack shows it entered the kernel via `__GI___read` in libc, called from `main`.
 
 ---
 
 ## Testing
 
-### Unit Tests
+### Unit tests
 
-These tests cover pure logic: syscall name lookup, `/proc` path construction, PID directory name validation. No root required, no `/proc` access.
+Cover pure logic: syscall name lookup, `/proc` path construction, PID directory validation. No root required.
 
 ```bash
 make unit-test
 ```
 
-### Integration Tests
+### Integration tests
 
-The integration test uses `trap_fs`, a FUSE filesystem that accepts reads but never responds to them. Any process that tries to read from it immediately enters D-state.
+Uses `trap_fs`, a FUSE filesystem that accepts reads but never responds. Any process reading from it immediately enters D-state.
 
-**Manual setup (three terminals):**
+**Manual setup:**
 
 ```bash
-# Terminal 1: start the FUSE daemon that blocks reads forever
+# Terminal 1: start the blocking FUSE daemon
 ./trap_fs /tmp/fuse_mount
 
-# Terminal 2: fork a child that reads from the mount, watch it enter D-state
+# Terminal 2: fork a child into D-state
 ./monitor
 
 # Terminal 3: run the tool
 sudo ./dstate
-
-# To release: kill the FUSE daemon
-# (SIGTERM and SIGKILL have no effect on D-state processes themselves)
 ```
 
 **Automated:**
 
 ```bash
-make test           # traps a process, runs dstate scanner — verifies full diagnostics output (requires sudo)
-make test-pid       # same, but diagnoses by specific PID using the -p flag (requires sudo)
-make test-monitor   # runs monitor standalone — demonstrates that SIGTERM is ignored in D-state
+make test           # trap a process, run scanner (requires sudo)
+make test-pid       # same, diagnose by PID with -p flag (requires sudo)
+make test-monitor   # SIGTERM immunity demonstration
 ```
 
-Note: `make test` and `make test-monitor` are intentionally separate. Running monitor alongside dstate in the same session causes interference because trap_fs runs single-threaded (-s): the FUSE daemon is busy handling the first blocked read and cannot process the monitor's child request, which causes the monitor's child to behave unpredictably.
+> `make test` and `make test-monitor` must not run simultaneously. `trap_fs` runs single-threaded (`-s`): while handling the first blocked read it cannot process new requests, so the monitor's child behaves unpredictably.
 
 ---
 
 ## API Reference
 
-All functions return `0` on success and `-1` on error. Output is written through pointer parameters. `read_full_diagnostics()` returns `DSTATE_PROC_GONE` (`1`) if the process exited between the initial detection scan and the diagnostic read. This is a normal condition — the caller should skip the process. See `include/dstate.h` for all struct definitions.
+All functions return `0` on success, `-1` on error. `read_full_diagnostics()` returns `DSTATE_PROC_GONE` (`1`) if the process exited between detection and the diagnostic read. See `include/dstate.h` for struct definitions.
 
 ### Detection
 
@@ -390,7 +307,7 @@ void free_dstate_list(dstate_process_t *list);
 void print_dstate_summary(const dstate_process_t *procs, int count);
 ```
 
-`find_dstate_processes` allocates the result array internally and writes the pointer to `*results`. Always free it with `free_dstate_list` when done.
+`find_dstate_processes` allocates the result array internally. Always free with `free_dstate_list`.
 
 ### Diagnostics
 
@@ -410,9 +327,7 @@ void print_diagnostics(const process_diagnostics_t *diag);
 int read_registers_ptrace(pid_t pid, elf_gregset_t *regs_out);
 ```
 
-Attaches to the process with `PTRACE_ATTACH`, waits for it to stop with `waitpid`, reads the full 27-register set with `PTRACE_GETREGS`, stores them into `regs_out` indexed by `elfreg_index_t`, and immediately detaches. Only called from `read_full_diagnostics()` when the process state is `S` or `T`. Returns `-1` if permission is denied, the process no longer exists, or the process transitioned into D-state between the state check and the attach attempt.
-
-The results are stored in `diag->ptrace_regs`. The `diag->ptrace_valid` flag is set to `1` only on success.
+Attaches via `PTRACE_ATTACH`, waits for stop, reads 27 registers via `PTRACE_GETREGS` into `regs_out` (indexed by `elfreg_index_t`), detaches. Only called for S/T-state. Returns `-1` if permission denied, process gone, or process transitioned to D-state before attach.
 
 ### User Stack Unwinding
 
@@ -424,23 +339,21 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
                     char *src_out, size_t src_len);
 ```
 
-`read_full_diagnostics` calls `read_user_stack_libunwind` first. If it returns an error or produces fewer than three frames, `read_user_stack` (the heuristic scanner) runs instead and overwrites the result.
+`read_full_diagnostics` calls libunwind first; if it returns fewer than three frames, `read_user_stack` (heuristic) runs and overwrites the result.
 
-On failure, `diag->user_stack.reason` is set to one of:
-
-| Constant | Value | Meaning |
+| Failure code | Value | Meaning |
 |---|---|---|
-| `USER_STACK_ERR_PERM` | 1 | Permission denied opening `/proc/[pid]/mem`. Run as root or with `CAP_SYS_PTRACE`. |
-| `USER_STACK_ERR_UNAVAIL` | 2 | Memory unreadable or the process vanished between steps. |
-| `USER_STACK_ERR_NO_SP` | 3 | Stack pointer is zero. The process was not in a syscall when sampled and ptrace also failed, so there is no starting point for unwinding. |
+| `USER_STACK_ERR_PERM` | 1 | Permission denied on `/proc/[pid]/mem`. Needs root or `CAP_SYS_PTRACE`. |
+| `USER_STACK_ERR_UNAVAIL` | 2 | Memory unreadable or process vanished. |
+| `USER_STACK_ERR_NO_SP` | 3 | Stack pointer is zero, process was not in a syscall and ptrace also failed. |
 
-### Lock Conflict Detection
+### Lock Conflict
 
 ```c
 int read_lock_conflict(pid_t pid, process_diagnostics_t *diag);
 ```
 
-Checks whether the current syscall is `fcntl` (nr=72) or `flock` (nr=73) and if not it returns immediately. If so, it resolves the file descriptor from args[0] via `/proc/[pid]/fd/N`, calls `stat()` to obtain the file's device major:minor and inode, then scans `/proc/locks` line by line looking for an entry with a matching major:minor:inode triple held by a different PID. On finding a conflict, sets `diag->lock_conflict.found = 1` and fills in `holder_pid`, `lock_type`, `access`, and `path`.
+Only acts on `fcntl` (nr=72) and `flock` (nr=73). Resolves the fd, calls `stat()` for device+inode, scans `/proc/locks` for a matching entry held by another PID. Sets `diag->lock_conflict.found = 1` on match.
 
 ### ELF Core File
 
@@ -448,31 +361,23 @@ Checks whether the current syscall is `fcntl` (nr=72) or `flock` (nr=73) and if 
 int write_core_file(pid_t pid, process_diagnostics_t *diag, const char *outpath);
 ```
 
-Writes a GDB-loadable ELF core file to `outpath`. Requires that `read_full_diagnostics` has already been called for the same PID. For D-state processes the register snapshot in the core contains only RIP, RSP, and the syscall arguments. For S/T-state processes it contains the full 27-register ptrace snapshot.
+Requires `read_full_diagnostics` to have been called first. D-state cores contain only RIP, RSP, and syscall args. S/T-state cores contain the full 27-register snapshot.
 
 ---
 
 ## Known Limitations
 
-**x86-64 only.** The syscall number table in `proc_reader.c` is specific to x86-64. On ARM64 or RISC-V, syscall numbers are different. The tool compiles on other architectures but syscall names will be wrong.
-
-**TOCTOU races.** Between the detection scan and the diagnostic read, a process can exit. This is unavoidable with `/proc`. The tool handles it gracefully: `read_full_diagnostics` returns `DSTATE_PROC_GONE` and the process is skipped.
-
-**Privileges required for kernel stack, user stack, and ptrace.** Reading `/proc/[pid]/stack` and `/proc/[pid]/mem` both require root or `CAP_SYS_PTRACE`. Attaching via ptrace for register reads on S/T-state processes requires the same. The kernel enforces this.
-
-**Symbol resolution requires debug info.** `resolve_symbol` calls `addr2line` for each frame. Function names and source lines only appear for binaries compiled with `-g`. Without debug information, every frame shows as `??` / `??:0`.
-
-**D-state user stack is best-effort.** For D-state processes, only RSP and RIP are available from `/proc/[pid]/syscall`. libunwind may stop early if DWARF CFI rules for a frame require a callee-saved register (RBP, RBX, R12–R15) that was not captured. When this happens, the heuristic scanner takes over and scans raw stack memory for values that look like return addresses. The heuristic can include false positives and miss frames the compiler kept in registers rather than spilling to the stack.
-
-**Only the main thread's stack is read.** `/proc/[pid]/syscall` and `/proc/[pid]/mem` target the process's main thread. For multi-threaded programs, other threads may have their own stacks and their own blocking syscalls. Diagnosing individual threads requires reading `/proc/[pid]/task/[tid]/syscall` per thread, which this tool does not do.
-
-**ptrace cannot attach to D-state processes.** `SIGSTOP` cannot be delivered to a process in uninterruptible sleep, so `ptrace(PTRACE_ATTACH, ...)` blocks indefinitely. This is why the full register snapshot is unavailable for D-state, and why libunwind's DWARF unwinding is limited to RSP and RIP in that case.
-
-**Lock conflict detection covers only advisory file locks.** The `flock` and `fcntl` locking mechanisms appear in `/proc/locks`. Futex-based locks (pthreads mutexes, C++ `std::mutex`, Go sync primitives) operate through a different kernel mechanism and do not appear there. If a process is deadlocked on a mutex rather than a file lock, this tool will not identify the holder.
-
-**ELF core registers are incomplete for D-state.** Because ptrace cannot attach to a D-state process, the NT_PRSTATUS note in the core file contains only the registers available from `/proc/[pid]/syscall`: RIP, RSP, and the six syscall argument registers. GDB can still load and inspect memory, but register-dependent commands like `bt` may produce incomplete results compared to a core from a process that was cleanly stopped.
-
-**libunwind UPT struct ABI dependency.** `src/unwind_reader.c` uses an internal layout assumption: that `struct UPT_info` in libunwind has `pid_t` as its first member. This is not part of libunwind's public API. The code is verified against libunwind 1.x. A future libunwind release that changes this layout would break unwinding silently with no compile-time warning.
+| Limitation | Detail |
+|---|---|
+| x86-64 only | Syscall table is x86-64 specific. Compiles on other architectures but names will be wrong. |
+| TOCTOU races | Processes can exit between detection and diagnostic read. Handled gracefully via `DSTATE_PROC_GONE`. |
+| Privileges required | `/proc/[pid]/stack`, `/proc/[pid]/mem`, and ptrace all require root or `CAP_SYS_PTRACE`. |
+| Symbol resolution requires `-g` | `addr2line` returns `??` / `??:0` for stripped binaries. |
+| D-state unwinding is best-effort | Only RSP and RIP are available from `/proc/[pid]/syscall`. libunwind stops early when DWARF rules require callee-saved registers that were not captured. The heuristic scanner fills in but can include false positives. |
+| Main thread only | `/proc/[pid]/syscall` targets the main thread. Multi-threaded programs may have other threads blocked, diagnosing them requires per-thread files under `/proc/[pid]/task/[tid]/`. |
+| Advisory locks only | `flock` and `fcntl` locks appear in `/proc/locks`. Futex-based locks (pthreads mutexes, `std::mutex`, Go sync) do not. Holder identification is not possible for those. |
+| Incomplete D-state core registers | NT_PRSTATUS contains only registers from `/proc/[pid]/syscall`. GDB can inspect memory but `bt` may be incomplete. |
+| libunwind internal ABI | `src/unwind_reader.c` assumes `pid_t` is the first member of `struct UPT_info`. Not a public API guarantee. It has to be verified against libunwind 1.x. |
 
 ---
 
