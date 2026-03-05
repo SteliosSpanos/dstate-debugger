@@ -7,23 +7,26 @@
 
 void test_syscall_name_known(void)
 {
-    assert(strcmp(syscall_name(0), "read") == 0);
-    assert(strcmp(syscall_name(1), "write") == 0);
-    assert(strcmp(syscall_name(59), "execve") == 0);
+    char buf[32];
+    assert(strcmp(syscall_name(0, buf, sizeof(buf)), "read") == 0);
+    assert(strcmp(syscall_name(1, buf, sizeof(buf)), "write") == 0);
+    assert(strcmp(syscall_name(59, buf, sizeof(buf)), "execve") == 0);
     printf("  PASS: syscall_name known values\n");
 }
 
 void test_syscall_name_unknown(void)
 {
-    const char *name = syscall_name(999);
+    char buf[32];
+    const char *name = syscall_name(999, buf, sizeof(buf));
     assert(strncmp(name, "syscall_", 8) == 0);
     printf("  PASS: syscall_name unknown value\n");
 }
 
 void test_syscall_name_negative(void)
 {
-    assert(strcmp(syscall_name(-1), "(not in syscall)") == 0);
-    assert(strcmp(syscall_name(-100), "(not in syscall)") == 0);
+    char buf[32];
+    assert(strcmp(syscall_name(-1, buf, sizeof(buf)), "(not in syscall)") == 0);
+    assert(strcmp(syscall_name(-100, buf, sizeof(buf)), "(not in syscall)") == 0);
     printf("  PASS: syscall_name_negative (not in syscall)\n");
 }
 
