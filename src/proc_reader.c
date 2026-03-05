@@ -66,18 +66,16 @@ static const char *syscall_names[] = {
 
 #define SYSCALL_TABLE_SIZE (sizeof(syscall_names) / sizeof(syscall_names[0]))
 
-const char *syscall_name(long nr)
+const char *syscall_name(long nr, char *buf, size_t buflen)
 {
-	static char unknown[32];
-
 	if (nr < 0)
 		return "(not in syscall)";
 
 	if ((size_t)nr < SYSCALL_TABLE_SIZE && syscall_names[nr])
 		return syscall_names[nr];
 
-	snprintf(unknown, sizeof(unknown), "syscall_%ld", nr);
-	return unknown;
+	snprintf(buf, buflen, "syscall_%ld", nr);
+	return buf;
 }
 
 int read_process_stat(pid_t pid, dstate_process_t *proc)
@@ -333,7 +331,8 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	printf("\nSystem Call Information:\n");
 	if (p->syscall_nr >= 0)
 	{
-		printf("   Syscall:   %s (nr = %ld)\n", syscall_name(p->syscall_nr), p->syscall_nr);
+		char scbuf[32];
+		printf("   Syscall:   %s (nr = %ld)\n", syscall_name(p->syscall_nr, scbuf, sizeof(scbuf)), p->syscall_nr);
 		printf("   Args:      0x%lx, 0x%lx, 0x%lx\n", p->syscall_args[0], p->syscall_args[1], p->syscall_args[2]);
 		printf("   IP:        0x%lx\n", p->instruction_ptr);
 		printf("   SP:        0x%lx\n", p->stack_ptr);
