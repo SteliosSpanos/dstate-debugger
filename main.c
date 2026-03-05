@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
 		{
 		case 'h':
 			print_usage(argv[0]);
-			return 0;
+			return EXIT_SUCCESS;
 		case 'p':
 		{
 			char *endptr;
@@ -46,7 +46,7 @@ int main(int argc, char *argv[])
 			if (errno != 0 || *endptr != '\0' || val <= 0 || val > INT_MAX)
 			{
 				fprintf(stderr, "Invalid PID: %s\n", optarg);
-				return 1;
+				return EXIT_FAILURE;
 			}
 			target_pid = (pid_t)val;
 			break;
@@ -56,14 +56,14 @@ int main(int argc, char *argv[])
 			break;
 		default:
 			print_usage(argv[0]);
-			return 1;
+			return EXIT_FAILURE;
 		}
 	}
 
 	if (outfile && target_pid <= 0)
 	{
 		fprintf(stderr, "Error: -o requires -p PID\n");
-		return 1;
+		return EXIT_FAILURE;
 	}
 
 	if (target_pid > 0)
@@ -74,20 +74,26 @@ int main(int argc, char *argv[])
 		if (ret == DSTATE_PROC_GONE)
 		{
 			fprintf(stderr, "Process %d does not exist\n", target_pid);
-			return 1;
+			return EXIT_FAILURE;
 		}
 		if (ret < 0)
 		{
 			fprintf(stderr, "Failed to read diagnostics for PID %d\n", target_pid);
-			return 1;
+			return EXIT_FAILURE;
 		}
 
 		print_diagnostics(&diag);
 
 		if (outfile)
-			write_core_file(target_pid, &diag, outfile);
+		{
+			if (write_core_file(target_pid, &diag, outfile) < 0)
+			{
+				fprintf(stderr, "Failed to write core file: %s\n", outfile);
+				return EXIT_FAILURE;
+			}
+		}
 
-		return 0;
+		return EXIT_SUCCESS;
 	}
 
 	dstate_process_t *procs = NULL;
@@ -96,7 +102,7 @@ int main(int argc, char *argv[])
 	if (find_dstate_processes(&procs, &count) < 0)
 	{
 		fprintf(stderr, "Failed to scan /proc\n");
-		return 1;
+		return EXIT_FAILURE;
 	}
 
 	print_dstate_summary(procs, count);
@@ -115,5 +121,5 @@ int main(int argc, char *argv[])
 	}
 
 	free_dstate_list(procs);
-	return 0;
+	return EXIT_SUCCESS;
 }
