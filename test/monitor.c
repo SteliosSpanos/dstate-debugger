@@ -103,6 +103,7 @@ int main(void)
 			printf("\n[Monitor]: SIGTERM was ignored! Process is still in D-State.\n");
 			printf("[Monitor]: On modern kernels, SIGKILL can wake FUSE D-state (TASK_KILLABLE).\n");
 			printf("[Monitor]: But the real fix is to kill the FUSE daemon.\n");
+			waitpid(pid, NULL, WNOHANG);
 		}
 		else
 		{
