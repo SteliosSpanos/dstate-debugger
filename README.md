@@ -317,7 +317,7 @@ int read_process_stat(pid_t pid, dstate_process_t *proc);
 int read_process_syscall(pid_t pid, dstate_process_t *proc);
 int read_process_wchan(pid_t pid, char *wchan, size_t len);
 int read_process_stack(pid_t pid, char *stack, size_t len);
-const char *syscall_name(long nr);
+const char *syscall_name(long nr, char *buf, size_t buflen);
 void print_diagnostics(const process_diagnostics_t *diag);
 ```
 
