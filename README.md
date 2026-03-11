@@ -124,7 +124,7 @@ Device + inode uniquely identifies a file regardless of how it was opened (hard 
 
 ### User stack unwinding
 
-Two methods run in sequence. libunwind runs first; if it fails or returns fewer than three frames, the heuristic scanner takes over.
+Two methods run in sequence. libunwind runs first, if it fails or returns fewer than three frames, the heuristic scanner takes over.
 
 **libunwind (`src/unwind_reader.c`)**
 
