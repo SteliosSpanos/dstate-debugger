@@ -154,7 +154,7 @@ static int compute_layout(pid_t pid, const process_maps_t *maps, core_layout_t *
 
     snprintf(mem_path, sizeof(mem_path), "/proc/%d/mem", pid);
 
-    int mem_fd = open(mem_path, O_RDONLY);
+    int mem_fd = open(mem_path, O_RDONLY | O_CLOEXEC);
     if (mem_fd < 0)
         return -1;
 
@@ -424,7 +424,7 @@ static int write_memory(pid_t pid, int fd_out, const process_maps_t *maps, const
 
     snprintf(mem_path, sizeof(mem_path), "/proc/%d/mem", pid);
 
-    int mem_fd = open(mem_path, O_RDONLY);
+    int mem_fd = open(mem_path, O_RDONLY | O_CLOEXEC);
     if (mem_fd < 0)
         return -1;
 

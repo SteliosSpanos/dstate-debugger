@@ -203,7 +203,7 @@ int read_user_stack_libunwind(pid_t pid, process_diagnostics_t *diag)
 
     snprintf(path, sizeof(path), "/proc/%d/mem", pid);
 
-    int mem_fd = open(path, O_RDONLY);
+    int mem_fd = open(path, O_RDONLY | O_CLOEXEC);
     if (mem_fd < 0)
     {
         diag->user_stack.reason = (errno == EACCES || errno == EPERM)

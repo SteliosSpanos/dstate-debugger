@@ -276,11 +276,19 @@ void test_fprint_safe(void)
     fprint_safe(f, "abcdef", 3, 5);
     fputc('|', f);
     fprint_safe(f, "xy", 0, 4);
+    fputc('|', f);
+    fprint_safe(f, "\xce\xb1\xc2\x9b" "1m\x9b\xc2\xa9\xe2\x82\xac\xff", 0, 0);
+    fputc('|', f);
+    /* overlong CSI, truncated sequence before ASCII, lone lead byte, surrogate */
+    fprint_safe(f, "\xe0\x80\x9b\xf0\x80\x80\x9b\xe2\x9b[\xc2" "a\xed\xa0\x80\xc2", 0, 0);
+    fputc('|', f);
+    /* a multi-byte character is never cut in half by maxlen */
+    fprint_safe(f, "ab\xe2\x82\xac", 4, 0);
     fclose(f);
 
-    assert(strcmp(out, "a?[31mb??c|abc  |xy  ") == 0);
+    assert(strcmp(out, "a?[31mb??c|abc  |xy  |\xce\xb1??1m?\xc2\xa9\xe2\x82\xac?|?????????[?a????|ab") == 0);
     free(out);
-    printf("  PASS: fprint_safe replaces control bytes, truncates and pads\n");
+    printf("  PASS: fprint_safe replaces control bytes and C1 controls, keeps UTF-8, truncates and pads\n");
 }
 
 void test_read_process_maps_self(void)

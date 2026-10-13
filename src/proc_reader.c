@@ -762,7 +762,7 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 
 	snprintf(path, sizeof(path), "/proc/%d/mem", pid);
 
-	mem_fd = open(path, O_RDONLY);
+	mem_fd = open(path, O_RDONLY | O_CLOEXEC);
 	if (mem_fd < 0)
 	{
 		diag->user_stack.reason = (errno == EACCES || errno == EPERM)
@@ -833,24 +833,17 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 	return 0;
 }
 
-uint64_t file_offset_to_vaddr(const char *binary_path, uint64_t offset)
+static uint64_t fd_offset_to_vaddr(int fd, uint64_t offset)
 {
 	Elf64_Ehdr eh;
 	uint64_t result = offset;
-	int fd = open_regular(binary_path);
-
-	if (fd < 0)
-		return offset;
 
 	if (pread(fd, &eh, sizeof(eh), 0) != (ssize_t)sizeof(eh) ||
 		memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 ||
 		eh.e_ident[EI_CLASS] != ELFCLASS64 ||
 		eh.e_ident[EI_DATA] != ELFDATA2LSB ||
 		eh.e_phentsize != sizeof(Elf64_Phdr))
-	{
-		close(fd);
 		return offset;
-	}
 
 	for (unsigned int i = 0; i < eh.e_phnum; ++i)
 	{
@@ -866,6 +859,17 @@ uint64_t file_offset_to_vaddr(const char *binary_path, uint64_t offset)
 		}
 	}
 
+	return result;
+}
+
+uint64_t file_offset_to_vaddr(const char *binary_path, uint64_t offset)
+{
+	int fd = open_regular(binary_path);
+
+	if (fd < 0)
+		return offset;
+
+	uint64_t result = fd_offset_to_vaddr(fd, offset);
 	close(fd);
 	return result;
 }
@@ -891,7 +895,7 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
 					char *func_out, size_t func_len,
 					char *src_out, size_t src_len)
 {
-	char cmd[MAX_PATH_LEN + 64];
+	char cmd[128];
 	FILE *fp;
 	char line[256];
 
@@ -900,22 +904,26 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
 	func_out[func_len - 1] = '\0';
 	src_out[src_len - 1] = '\0';
 
-	if (strchr(binary_path, '\'') != NULL)
-		return;
-
 	size_t path_len = strlen(binary_path);
 	if (path_len >= 10 && strcmp(binary_path + path_len - 10, " (deleted)") == 0)
 		return;
 
-	int probe_fd = open_regular(binary_path);
-	if (probe_fd < 0)
+	/* addr2line gets the already checked descriptor, not the name, so the target cannot swap the file in between. */
+	int fd = open_regular(binary_path);
+	if (fd < 0)
 		return;
-	close(probe_fd);
 
-	snprintf(cmd, sizeof(cmd), "/usr/bin/addr2line -e '%s' -f -C 0x%lx 2>/dev/null",
-			 binary_path, (unsigned long)file_offset_to_vaddr(binary_path, offset));
+	if (fcntl(fd, F_SETFD, 0) < 0)
+	{
+		close(fd);
+		return;
+	}
+
+	snprintf(cmd, sizeof(cmd), "/usr/bin/addr2line -e /proc/self/fd/%d -f -C 0x%lx 2>/dev/null",
+			 fd, (unsigned long)fd_offset_to_vaddr(fd, offset));
 
 	fp = popen(cmd, "r");
+	close(fd);
 	if (!fp)
 		return;
 

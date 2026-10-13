@@ -90,7 +90,7 @@ sudo ./dstate -p PID -o FILE   # diagnose and write an ELF core file
 
 With `-p`, the exit status is non-zero if the process does not exist, the diagnostics cannot be read, or the core file cannot be written. In scan mode the exit status is non-zero if `/proc` cannot be scanned or if the diagnostic read failed for any D-state process (a process that exited in the meantime is not a failure). Extra positional arguments are rejected with the usage text.
 
-Process names, command lines and paths come from the target and are printed with control characters (bytes below `0x20` and `0x7f`) replaced by `?`, so they cannot inject terminal escape sequences. Bytes `0x80` and above are left alone so UTF-8 text stays intact; C1 control code points encoded in UTF-8 are not filtered.
+Process names, command lines and paths come from the target and are printed with control characters replaced by `?`, so they cannot inject terminal escape sequences: bytes below `0x20`, `0x7f`, C1 control code points (`U+0080` to `U+009F`), and every byte that is not part of a complete, well-formed UTF-8 sequence (truncated sequences, overlong forms, surrogates and values above `U+10FFFF` included). Other UTF-8 text is printed unchanged, and a multi-byte character is never cut in half by a length limit. Display-only code points such as bidirectional overrides are not filtered. The output assumes a UTF-8 terminal: on an 8-bit terminal the continuation bytes of valid characters can still be read as control codes.
 
 Root or `CAP_SYS_PTRACE` is required for `/proc/[pid]/stack` (kernel stack), `/proc/[pid]/mem` (user stack unwinding and core generation), and ptrace register reads (S/T-state only). The remaining diagnostics work without elevated privileges for processes you own.
 
@@ -204,7 +204,7 @@ Each form is accepted only when the ModRM byte (and SIB byte, if any) gives exac
 
 ### Symbol resolution
 
-For each frame inside a file-backed mapping, the tool computes the file offset `(address - vma_start) + file_offset`, converts it to an ELF virtual address using the binary's program headers (the `PT_LOAD` segment containing the offset: `offset - p_offset + p_vaddr`), and runs `/usr/bin/addr2line -f -e <binary>` on that. If the file is not a readable ELF64 the raw offset is used. This resolves both PIE and non-PIE (`-no-pie`) executables; both were checked with a `-g` test program. Function names and source lines need debug information (`-g`); without it `addr2line` prints `??`. Very long function names are cut at 255 characters without corrupting the source line.
+For each frame inside a file-backed mapping, the tool computes the file offset `(address - vma_start) + file_offset`, converts it to an ELF virtual address using the binary's program headers (the `PT_LOAD` segment containing the offset: `offset - p_offset + p_vaddr`), and runs `/usr/bin/addr2line -f -e /proc/self/fd/N` on that, where `N` is a descriptor the tool already opened and checked to be a regular file. The binary is never reopened by name, so the target cannot swap the file between the check and the read. If the file is not a readable ELF64 the raw offset is used. This resolves both PIE and non-PIE (`-no-pie`) executables; both were checked with a `-g` test program. Function names and source lines need debug information (`-g`); without it `addr2line` prints `??`. Very long function names are cut at 255 characters without corrupting the source line.
 
 The `(+0x...)` value printed next to each frame is `address - vma_start`; it is omitted when no mapping was found for the address.
 
@@ -457,7 +457,7 @@ Requires `read_full_diagnostics` to have been called first. D-state cores contai
 void fprint_safe(FILE *out, const char *s, int maxlen, int pad);
 ```
 
-Prints at most `maxlen` characters (0 means all) with bytes below `0x20` and `0x7f` replaced by `?`, then pads with spaces up to `pad` columns. Used for every string that comes from the target.
+Prints at most `maxlen` characters (0 means all) with control characters (bytes below `0x20`, `0x7f`, C1 control code points) and malformed UTF-8 bytes replaced by `?`, then pads with spaces up to `pad` columns. Used for every string that comes from the target.
 
 ---
 
