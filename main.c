@@ -43,7 +43,7 @@ int main(int argc, char *argv[])
 			char *endptr;
 			errno = 0;
 			long val = strtol(optarg, &endptr, 10);
-			if (errno != 0 || *endptr != '\0' || val <= 0 || val > INT_MAX)
+			if (optarg[0] < '0' || optarg[0] > '9' || errno != 0 || *endptr != '\0' || val <= 0 || val > INT_MAX)
 			{
 				fprintf(stderr, "Invalid PID: %s\n", optarg);
 				return EXIT_FAILURE;
@@ -60,6 +60,13 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	if (optind < argc)
+	{
+		fprintf(stderr, "Unexpected argument: %s\n", argv[optind]);
+		print_usage(argv[0]);
+		return EXIT_FAILURE;
+	}
+
 	if (outfile && target_pid <= 0)
 	{
 		fprintf(stderr, "Error: -o requires -p PID\n");
@@ -69,35 +76,37 @@ int main(int argc, char *argv[])
 	if (target_pid > 0)
 	{
 		process_diagnostics_t diag;
+		int status = EXIT_SUCCESS;
 		int ret = read_full_diagnostics(target_pid, &diag);
 
 		if (ret == DSTATE_PROC_GONE)
 		{
 			fprintf(stderr, "Process %d does not exist\n", target_pid);
-			return EXIT_FAILURE;
+			status = EXIT_FAILURE;
 		}
-		if (ret < 0)
+		else if (ret < 0)
 		{
 			fprintf(stderr, "Failed to read diagnostics for PID %d\n", target_pid);
-			return EXIT_FAILURE;
+			status = EXIT_FAILURE;
 		}
-
-		print_diagnostics(&diag);
-
-		if (outfile)
+		else
 		{
-			if (write_core_file(target_pid, &diag, outfile) < 0)
+			print_diagnostics(&diag);
+
+			if (outfile && write_core_file(target_pid, &diag, outfile) < 0)
 			{
 				fprintf(stderr, "Failed to write core file: %s\n", outfile);
-				return EXIT_FAILURE;
+				status = EXIT_FAILURE;
 			}
 		}
 
-		return EXIT_SUCCESS;
+		free_diagnostics(&diag);
+		return status;
 	}
 
 	dstate_process_t *procs = NULL;
 	int count = 0;
+	int status = EXIT_SUCCESS;
 
 	if (find_dstate_processes(&procs, &count) < 0)
 	{
@@ -114,12 +123,15 @@ int main(int argc, char *argv[])
 		int ret = read_full_diagnostics(procs[i].pid, &diag);
 		if (ret == 0)
 			print_diagnostics(&diag);
-		else if (ret == DSTATE_PROC_GONE)
-			continue;
-		else
+		else if (ret != DSTATE_PROC_GONE)
+		{
 			fprintf(stderr, "Failed to read diagnostics for PID %d\n", procs[i].pid);
+			status = EXIT_FAILURE;
+		}
+
+		free_diagnostics(&diag);
 	}
 
 	free_dstate_list(procs);
-	return EXIT_SUCCESS;
+	return status;
 }

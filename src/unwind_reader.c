@@ -16,12 +16,17 @@
 typedef struct
 {
     pid_t pid;
+    void *upt;
+    const process_maps_t *maps;
     int mem_fd;
     uint64_t rsp;
     uint64_t rip;
     int have_full_regs;
     elf_gregset_t regs;
 } unwind_ctx_t;
+
+/* The _UPT_* helpers call access_mem with their own handle as arg, not our context. */
+static unwind_ctx_t *active_ctx;
 
 static const int elfreg_map[17] = {
     ELFREG_RAX, ELFREG_RDX, ELFREG_RCX, ELFREG_RBX,
@@ -34,19 +39,40 @@ static int acc_find_proc_info(unw_addr_space_t as, unw_word_t ip,
                               unw_proc_info_t *pip, int need_unwind_info,
                               void *arg)
 {
-    return _UPT_find_proc_info(as, ip, pip, need_unwind_info, arg);
+    unwind_ctx_t *ctx = arg;
+    const map_entry_t *hit = NULL;
+
+    for (int i = 0; i < ctx->maps->count; ++i)
+    {
+        if (ip >= ctx->maps->entries[i].start && ip < ctx->maps->entries[i].end)
+        {
+            hit = &ctx->maps->entries[i];
+            break;
+        }
+    }
+
+    /* libunwind opens the image by name; a window between this check and its open remains. */
+    if (!hit || !mapping_image_is_safe(hit->path))
+        return -UNW_ENOINFO;
+
+    return _UPT_find_proc_info(as, ip, pip, need_unwind_info, ctx->upt);
 }
 
 static void acc_put_unwind_info(unw_addr_space_t as, unw_proc_info_t *pip,
                                 void *arg)
 {
-    _UPT_put_unwind_info(as, pip, arg);
+    _UPT_put_unwind_info(as, pip, ((unwind_ctx_t *)arg)->upt);
 }
 
 static int acc_get_dyn_info_list_addr(unw_addr_space_t as, unw_word_t *dil,
                                       void *arg)
 {
-    return _UPT_get_dyn_info_list_addr(as, dil, arg);
+    /* The _UPT version looks up a symbol by opening mapped images by name; JIT unwind info is not needed. */
+    (void)as;
+    (void)dil;
+    (void)arg;
+
+    return -UNW_ENOINFO;
 }
 
 static int acc_access_mem(unw_addr_space_t as, unw_word_t addr, unw_word_t *val,
@@ -57,7 +83,11 @@ static int acc_access_mem(unw_addr_space_t as, unw_word_t addr, unw_word_t *val,
     if (write)
         return -UNW_EINVAL;
 
-    unwind_ctx_t *ctx = arg;
+    (void)arg;
+    unwind_ctx_t *ctx = active_ctx;
+    if (!ctx)
+        return -UNW_EINVAL;
+
     ssize_t n = pread(ctx->mem_fd, val, sizeof(*val), (off_t)addr);
 
     if (n != (ssize_t)sizeof(*val))
@@ -145,10 +175,12 @@ static unw_accessors_t proc_accessors = {
 int read_user_stack_libunwind(pid_t pid, process_diagnostics_t *diag)
 {
     char path[64];
+    int ret = -1;
 
     diag->user_stack.count = 0;
     diag->user_stack.valid = 0;
     diag->user_stack.reason = 0;
+    diag->user_stack.method = USER_STACK_METHOD_NONE;
 
     uint64_t rsp, rip;
 
@@ -185,30 +217,34 @@ int read_user_stack_libunwind(pid_t pid, process_diagnostics_t *diag)
         .mem_fd = mem_fd,
         .rsp = rsp,
         .rip = rip,
+        .maps = &diag->maps,
         .have_full_regs = diag->ptrace_valid,
     };
 
     if (diag->ptrace_valid)
         memcpy(ctx.regs, diag->ptrace_regs, sizeof(ctx.regs));
 
-    unw_addr_space_t as = unw_create_addr_space(&proc_accessors, 0);
-    if (!as)
+    ctx.upt = _UPT_create(pid);
+    if (!ctx.upt)
     {
         close(mem_fd);
         return -1;
     }
+
+    unw_addr_space_t as = unw_create_addr_space(&proc_accessors, 0);
+    if (!as)
+        goto out_upt;
 
     unw_set_caching_policy(as, UNW_CACHE_NONE);
 
+    active_ctx = &ctx;
+
     unw_cursor_t cursor;
     if (unw_init_remote(&cursor, as, &ctx) < 0)
-    {
-        unw_destroy_addr_space(as);
-        close(mem_fd);
-        return -1;
-    }
+        goto out_as;
 
     diag->user_stack.valid = 1;
+    diag->user_stack.method = USER_STACK_METHOD_LIBUNWIND;
 
     do
     {
@@ -254,7 +290,13 @@ int read_user_stack_libunwind(pid_t pid, process_diagnostics_t *diag)
         diag->user_stack.count++;
     } while (unw_step(&cursor) > 0 && diag->user_stack.count < MAX_USER_FRAMES);
 
+    ret = 0;
+
+out_as:
+    active_ctx = NULL;
     unw_destroy_addr_space(as);
+out_upt:
+    _UPT_destroy(ctx.upt);
     close(mem_fd);
-    return 0;
+    return ret;
 }

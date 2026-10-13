@@ -1,7 +1,12 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <limits.h>
 
 #include "../include/proc_utils.h"
 
@@ -10,6 +15,9 @@ ssize_t read_proc_file(const char *path, char *buffer, size_t bufsize)
     int fp;
     ssize_t total = 0;
     ssize_t n;
+
+    if (bufsize == 0)
+        return -1;
 
     fp = open(path, O_RDONLY);
     if (fp < 0)
@@ -40,11 +48,14 @@ ssize_t read_proc_line(const char *path, char *buffer, size_t bufsize)
 {
     FILE *fp;
 
+    if (bufsize == 0 || bufsize > INT_MAX)
+        return -1;
+
     fp = fopen(path, "r");
     if (!fp)
         return -1;
 
-    if (fgets(buffer, bufsize, fp) == NULL)
+    if (fgets(buffer, (int)bufsize, fp) == NULL)
     {
         fclose(fp);
         return -1;
@@ -91,4 +102,18 @@ char *build_proc_path(char *buffer, size_t bufsize, pid_t pid, const char *file)
         return NULL;
 
     return buffer;
+}
+
+void fprint_safe(FILE *out, const char *s, int maxlen, int pad)
+{
+    int printed = 0;
+
+    for (; *s && (maxlen <= 0 || printed < maxlen); ++s, ++printed)
+    {
+        unsigned char c = (unsigned char)*s;
+        fputc((c < 0x20 || c == 0x7f) ? '?' : c, out);
+    }
+
+    for (; printed < pad; ++printed)
+        fputc(' ', out);
 }

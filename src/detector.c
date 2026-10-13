@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
@@ -128,11 +132,9 @@ void print_dstate_summary(const dstate_process_t *procs, int count)
     for (int i = 0; i < count; ++i)
     {
         const dstate_process_t *p = &procs[i];
-        printf("%-8d %-20.20s %-8c %-30.30s\n",
-               p->pid,
-               p->comm[0] ? p->comm : "(unknown)",
-               p->state,
-               p->wchan[0] ? p->wchan : "(unknown)");
+        printf("%-8d ", p->pid);
+        fprint_safe(stdout, p->comm[0] ? p->comm : "(unknown)", 20, 20);
+        printf(" %-8c %-30.30s\n", p->state, p->wchan[0] ? p->wchan : "(unknown)");
     }
     printf("\n");
 }

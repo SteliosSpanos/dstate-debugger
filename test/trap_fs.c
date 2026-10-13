@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #define FUSE_USE_VERSION 26
 #define _FILE_OFFSET_BITS 64
 
@@ -63,6 +66,7 @@ static int do_read(const char *path, char *buffer, size_t size, off_t offset, st
 	{
 		printf("[Daemon]: The process is trying to read 'trap.txt'...\n");
 		printf("[Daemon]: Activating D-State\n");
+		fflush(stdout);
 
 		while (1)
 			sleep(1000);

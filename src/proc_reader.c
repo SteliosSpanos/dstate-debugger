@@ -1,10 +1,17 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/file.h>
+#include <elf.h>
 #include <sys/sysmacros.h>
 
 #include "../include/dstate.h"
@@ -31,6 +38,7 @@ static const char *syscall_names[] = {
 	[21] = "access",
 	[22] = "pipe",
 	[23] = "select",
+	[26] = "msync",
 	[32] = "dup",
 	[33] = "dup2",
 	[35] = "nanosleep",
@@ -48,6 +56,9 @@ static const char *syscall_names[] = {
 	[62] = "kill",
 	[72] = "fcntl",
 	[73] = "flock",
+	[74] = "fsync",
+	[75] = "fdatasync",
+	[77] = "ftruncate",
 	[78] = "getdents",
 	[79] = "getcwd",
 	[80] = "chdir",
@@ -58,10 +69,21 @@ static const char *syscall_names[] = {
 	[87] = "unlink",
 	[89] = "readlink",
 	[90] = "chmod",
+	[162] = "sync",
+	[202] = "futex",
 	[217] = "getdents64",
+	[230] = "clock_nanosleep",
+	[232] = "epoll_wait",
+	[247] = "waitid",
 	[257] = "openat",
 	[262] = "newfstatat",
+	[270] = "pselect6",
+	[271] = "ppoll",
+	[281] = "epoll_pwait",
+	[285] = "fallocate",
 	[288] = "accept4",
+	[306] = "syncfs",
+	[426] = "io_uring_enter",
 };
 
 #define SYSCALL_TABLE_SIZE (sizeof(syscall_names) / sizeof(syscall_names[0]))
@@ -78,66 +100,83 @@ const char *syscall_name(long nr, char *buf, size_t buflen)
 	return buf;
 }
 
-int read_process_stat(pid_t pid, dstate_process_t *proc)
+int parse_stat_line(const char *line, dstate_process_t *proc)
 {
-	char path[64];
-	char buffer[1024];
-	char *ptr;
-	char *comm_start, *comm_end;
+	const char *comm_start = strchr(line, '(');
+	const char *comm_end = strrchr(line, ')');
+	char state;
+	int ppid, num_threads;
+	unsigned long utime, stime, vm_size, vm_rss;
+	unsigned long long start_time;
 
-	snprintf(path, sizeof(path), "/proc/%d/stat", pid);
-
-	if (read_proc_file(path, buffer, sizeof(buffer)) < 0)
+	if (!comm_start || !comm_end || comm_end <= comm_start)
 		return -1;
 
-	comm_start = strchr(buffer, '(');
-	comm_end = strrchr(buffer, ')');
-
-	if (comm_start && comm_end && comm_end > comm_start)
-	{
-		size_t comm_len = comm_end - comm_start - 1;
-		if (comm_len >= sizeof(proc->comm))
-			comm_len = sizeof(proc->comm) - 1;
-
-		strncpy(proc->comm, comm_start + 1, comm_len);
-		proc->comm[comm_len] = '\0';
-
-		ptr = comm_end + 2;
-	}
-	else
+	if (comm_end[1] != ' ' || comm_end[2] == '\0')
 		return -1;
 
-	int parsed = sscanf(ptr,
+	int parsed = sscanf(comm_end + 2,
 						"%c %d %*d %*d %*d %*d %*u "
 						"%*u %*u %*u %*u "
 						"%lu %lu %*d %*d "
 						"%*d %*d %d "
 						"%*d %llu "
 						"%lu %lu",
-						&proc->state,
-						&proc->ppid,
-						&proc->utime,
-						&proc->stime,
-						&proc->num_threads,
-						&proc->start_time,
-						&proc->vm_size,
-						&proc->vm_rss);
+						&state,
+						&ppid,
+						&utime,
+						&stime,
+						&num_threads,
+						&start_time,
+						&vm_size,
+						&vm_rss);
 
-	if (parsed < 2)
+	if (parsed != 8)
 		return -1;
+
+	size_t comm_len = comm_end - comm_start - 1;
+	if (comm_len >= sizeof(proc->comm))
+		comm_len = sizeof(proc->comm) - 1;
+
+	memcpy(proc->comm, comm_start + 1, comm_len);
+	proc->comm[comm_len] = '\0';
+
+	proc->state = state;
+	proc->ppid = ppid;
+	proc->utime = utime;
+	proc->stime = stime;
+	proc->num_threads = num_threads;
+	proc->start_time = start_time;
 
 	long page_size = sysconf(_SC_PAGESIZE);
 	if (page_size > 0)
-		proc->vm_rss = (proc->vm_rss * page_size) / 1024;
+		vm_rss = (vm_rss * page_size) / 1024;
 
-	proc->vm_size /= 1024;
+	proc->vm_size = vm_size / 1024;
+	proc->vm_rss = vm_rss;
 
 	return 0;
+}
+
+int read_process_stat(pid_t pid, dstate_process_t *proc)
+{
+	char path[64];
+	char buffer[1024];
+
+	snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+
+	if (read_proc_file(path, buffer, sizeof(buffer)) < 0)
+		return -1;
+
+	return parse_stat_line(buffer, proc);
 }
 
 int read_process_wchan(pid_t pid, char *wchan, size_t len)
 {
 	char path[64];
+
+	if (len == 0)
+		return -1;
 
 	snprintf(path, sizeof(path), "/proc/%d/wchan", pid);
 
@@ -158,6 +197,41 @@ int read_process_wchan(pid_t pid, char *wchan, size_t len)
 	return 0;
 }
 
+int parse_syscall_line(const char *line, dstate_process_t *proc)
+{
+	long nr;
+	uint64_t args[6], sp, pc;
+
+	proc->syscall_nr = -1;
+
+	if (strncmp(line, "running", 7) == 0)
+		return 0;
+
+	if (strncmp(line, "-1 ", 3) == 0)
+	{
+		if (sscanf(line, "%*d %lx %lx", &sp, &pc) != 2)
+			return -1;
+
+		proc->stack_ptr = sp;
+		proc->instruction_ptr = pc;
+		return 0;
+	}
+
+	int parsed = sscanf(line,
+						"%ld %lx %lx %lx %lx %lx %lx %lx %lx",
+						&nr, &args[0], &args[1], &args[2],
+						&args[3], &args[4], &args[5], &sp, &pc);
+
+	if (parsed != 9)
+		return -1;
+
+	proc->syscall_nr = nr;
+	memcpy(proc->syscall_args, args, sizeof(args));
+	proc->stack_ptr = sp;
+	proc->instruction_ptr = pc;
+	return 0;
+}
+
 int read_process_syscall(pid_t pid, dstate_process_t *proc)
 {
 	char path[64];
@@ -170,31 +244,7 @@ int read_process_syscall(pid_t pid, dstate_process_t *proc)
 	if (read_proc_line(path, buffer, sizeof(buffer)) < 0)
 		return -1;
 
-	if (strncmp(buffer, "running", 7) == 0)
-		return 0;
-
-	if (strncmp(buffer, "-1", 2) == 0)
-		return 0;
-
-	int parsed = sscanf(buffer,
-						"%ld %lx %lx %lx %lx %lx %lx %lx %lx",
-						&proc->syscall_nr,
-						&proc->syscall_args[0],
-						&proc->syscall_args[1],
-						&proc->syscall_args[2],
-						&proc->syscall_args[3],
-						&proc->syscall_args[4],
-						&proc->syscall_args[5],
-						&proc->stack_ptr,
-						&proc->instruction_ptr);
-
-	if (parsed < 1)
-	{
-		proc->syscall_nr = -1;
-		return -1;
-	}
-
-	return 0;
+	return parse_syscall_line(buffer, proc);
 }
 
 int read_process_stack(pid_t pid, char *stack, size_t len)
@@ -219,6 +269,102 @@ int read_process_stack(pid_t pid, char *stack, size_t len)
 	return 0;
 }
 
+/* A target can swap a mapped file's name for a FIFO; never block on it. */
+static int open_regular(const char *path)
+{
+	struct stat st;
+	int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
+
+	if (fd < 0)
+		return -1;
+
+	if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode))
+	{
+		close(fd);
+		return -1;
+	}
+
+	return fd;
+}
+
+int mapping_image_is_safe(const char *path)
+{
+	struct stat st;
+	size_t len = strlen(path);
+
+	if (len == 0 || path[0] == '[')
+		return 1;
+
+	if (len >= 10 && strcmp(path + len - 10, " (deleted)") == 0)
+		return 0;
+
+	return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static int exe_is_32bit(pid_t pid)
+{
+	char path[64];
+	unsigned char ident[EI_NIDENT];
+	int fd;
+	ssize_t n;
+
+	snprintf(path, sizeof(path), "/proc/%d/exe", pid);
+
+	fd = open_regular(path);
+	if (fd < 0)
+		return 0;
+
+	n = read(fd, ident, sizeof(ident));
+	close(fd);
+
+	return n == (ssize_t)sizeof(ident) && memcmp(ident, ELFMAG, SELFMAG) == 0 &&
+		   ident[EI_CLASS] == ELFCLASS32;
+}
+
+static int syscall_has_fd_arg0(long nr)
+{
+	switch (nr)
+	{
+	case 0:	  /* read */
+	case 1:	  /* write */
+	case 3:	  /* close */
+	case 5:	  /* fstat */
+	case 16:  /* ioctl */
+	case 17:  /* pread64 */
+	case 18:  /* pwrite64 */
+	case 19:  /* readv */
+	case 20:  /* writev */
+	case 42:  /* connect */
+	case 43:  /* accept */
+	case 44:  /* sendto */
+	case 45:  /* recvfrom */
+	case 72:  /* fcntl */
+	case 73:  /* flock */
+	case 74:  /* fsync */
+	case 75:  /* fdatasync */
+	case 77:  /* ftruncate */
+	case 78:  /* getdents */
+	case 217: /* getdents64 */
+	case 288: /* accept4 */
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+void free_process_maps(process_maps_t *maps)
+{
+	free(maps->entries);
+	maps->entries = NULL;
+	maps->count = 0;
+	maps->capacity = 0;
+}
+
+void free_diagnostics(process_diagnostics_t *diag)
+{
+	free_process_maps(&diag->maps);
+}
+
 int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 {
 	char path[128];
@@ -238,6 +384,8 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 	read_process_wchan(pid, diag->basic.wchan, sizeof(diag->basic.wchan));
 
 	read_process_syscall(pid, &diag->basic);
+
+	diag->is_32bit = exe_is_32bit(pid);
 
 	if (diag->basic.state == 'S' || diag->basic.state == 'T')
 	{
@@ -270,18 +418,10 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 		}
 	}
 
-	if (diag->basic.syscall_nr != -1 && diag->basic.state == 'D')
+	if (diag->basic.syscall_nr != -1 && diag->basic.state == 'D' && !diag->is_32bit &&
+		syscall_has_fd_arg0(diag->basic.syscall_nr))
 	{
-		int target_fd = -1;
-		long nr = diag->basic.syscall_nr;
-
-		if (nr == 0 || nr == 1 ||
-			nr == 16 || nr == 17 ||
-			nr == 18 || nr == 19 ||
-			nr == 20 || nr == 42 ||
-			nr == 43 || nr == 44 ||
-			nr == 45 || nr == 288)
-			target_fd = (int)diag->basic.syscall_args[0];
+		int target_fd = (int)diag->basic.syscall_args[0];
 
 		if (target_fd >= 0)
 		{
@@ -294,12 +434,31 @@ int read_full_diagnostics(pid_t pid, process_diagnostics_t *diag)
 
 	read_process_maps(pid, &diag->maps);
 
-	read_lock_conflict(pid, diag);
+	if (!diag->is_32bit)
+		read_lock_conflict(pid, diag);
 
-	if (read_user_stack_libunwind(pid, diag) < 0 || diag->user_stack.count < 3)
+	int unwind_ret = read_user_stack_libunwind(pid, diag);
+
+	if (unwind_ret < 0 || diag->user_stack.count < 3)
+	{
+		user_stack_t unwound = diag->user_stack;
+
 		read_user_stack(pid, diag);
 
+		if (unwound.valid && unwound.count >= diag->user_stack.count)
+			diag->user_stack = unwound;
+	}
+
 	return 0;
+}
+
+static const char *user_stack_method_name(int method)
+{
+	if (method == USER_STACK_METHOD_LIBUNWIND)
+		return "libunwind";
+	if (method == USER_STACK_METHOD_HEURISTIC)
+		return "heuristic scan";
+	return NULL;
 }
 
 void print_diagnostics(const process_diagnostics_t *diag)
@@ -312,17 +471,23 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	printf("====================================================\n");
 
 	printf("\nBasic Information:\n");
-	printf("   Command:      %-48s\n", p->comm);
+	printf("   Command:      ");
+	fprint_safe(stdout, p->comm, 0, 48);
+	printf("\n");
 	printf("   State:        %c\n", p->state);
 	printf("   Parent PID:   %-48d\n", p->ppid);
 	printf("   Threads:      %-48d\n", p->num_threads);
 
 	printf("\nExecutable & Working Directory:\n");
-	printf("   Exe: %-55.55s\n", diag->exe[0] ? diag->exe : "(unknown)");
-	printf("   CWD: %-55.55s\n", diag->cwd[0] ? diag->cwd : "(unknown)");
+	printf("   Exe: ");
+	fprint_safe(stdout, diag->exe[0] ? diag->exe : "(unknown)", 55, 55);
+	printf("\n   CWD: ");
+	fprint_safe(stdout, diag->cwd[0] ? diag->cwd : "(unknown)", 55, 55);
+	printf("\n");
 
-	printf("\nCommand Line:\n");
-	printf("   %.60s\n", diag->cmdline[0] ? diag->cmdline : "(none)");
+	printf("\nCommand Line:\n   ");
+	fprint_safe(stdout, diag->cmdline[0] ? diag->cmdline : "(none)", 60, 0);
+	printf("\n");
 
 	printf("\nWait Channel (Kernel Function)\n");
 	printf("   %s\n", p->wchan[0] ? p->wchan : "(unknown)");
@@ -332,8 +497,17 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	if (p->syscall_nr >= 0)
 	{
 		char scbuf[32];
-		printf("   Syscall:   %s (nr = %ld)\n", syscall_name(p->syscall_nr, scbuf, sizeof(scbuf)), p->syscall_nr);
+		if (diag->is_32bit)
+			printf("   Syscall:   nr = %ld (32-bit process, name not resolved)\n", p->syscall_nr);
+		else
+			printf("   Syscall:   %s (nr = %ld)\n", syscall_name(p->syscall_nr, scbuf, sizeof(scbuf)), p->syscall_nr);
 		printf("   Args:      0x%lx, 0x%lx, 0x%lx\n", p->syscall_args[0], p->syscall_args[1], p->syscall_args[2]);
+		printf("   IP:        0x%lx\n", p->instruction_ptr);
+		printf("   SP:        0x%lx\n", p->stack_ptr);
+	}
+	else if (p->stack_ptr != 0)
+	{
+		printf("   (Not in a system call; blocked in user-mode code, for example a page fault)\n");
 		printf("   IP:        0x%lx\n", p->instruction_ptr);
 		printf("   SP:        0x%lx\n", p->stack_ptr);
 	}
@@ -361,22 +535,37 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	{
 		printf("\nBlocking File Descriptor:\n");
 		printf("   FD:        %d\n", diag->blocking_fd);
-		printf("   Path:      %s\n", diag->blocking_path[0] ? diag->blocking_path : "(unknown)");
+		printf("   Path:      ");
+		fprint_safe(stdout, diag->blocking_path[0] ? diag->blocking_path : "(unknown)", 0, 0);
+		printf("\n");
 	}
 
 	if (diag->lock_conflict.found)
 	{
-		char holder_comm[MAX_COMM_LEN] = "(unknown)";
-		char holder_path[64];
-		snprintf(holder_path, sizeof(holder_path), "/proc/%d/comm",
-				 diag->lock_conflict.holder_pid);
-		read_proc_line(holder_path, holder_comm, sizeof(holder_comm));
+		const lock_conflict_t *lc = &diag->lock_conflict;
 
 		printf("\nLock Conflict:\n");
-		printf("   Waiting for: %s lock on %s\n",
-			   diag->lock_conflict.access,
-			   diag->lock_conflict.path[0] ? diag->lock_conflict.path : "(unknown)");
-		printf("   Held by PID: %d (%s)\n", diag->lock_conflict.holder_pid, holder_comm);
+		printf("   Path:        ");
+		fprint_safe(stdout, lc->path[0] ? lc->path : "(unknown)", 0, 0);
+		printf("\n");
+
+		if (lc->holder_pid > 0)
+		{
+			char holder_comm[MAX_COMM_LEN] = "(unknown)";
+			char holder_path[64];
+			snprintf(holder_path, sizeof(holder_path), "/proc/%d/comm", lc->holder_pid);
+			read_proc_line(holder_path, holder_comm, sizeof(holder_comm));
+
+			printf("   Held by:     PID %d (", lc->holder_pid);
+			fprint_safe(stdout, holder_comm, 0, 0);
+			printf(")\n");
+		}
+		else if (lc->holder_pid < 0)
+			printf("   Held by:     an open file description (OFD lock, no owning PID)\n");
+		else
+			printf("   Held by:     a process outside this PID namespace\n");
+
+		printf("   Lock:        %s %s (%s)\n", lc->lock_type, lc->access, lc->advisory);
 	}
 
 	printf("\nMemory Usage:\n");
@@ -406,18 +595,31 @@ void print_diagnostics(const process_diagnostics_t *diag)
 	for (int i = 0; i < diag->maps.count; ++i)
 	{
 		const map_entry_t *e = &diag->maps.entries[i];
-		printf("   0x%lx-0x%lx  %s\n", e->start, e->end, e->path[0] ? e->path : "(anonymous)");
+		printf("   0x%lx-0x%lx  ", e->start, e->end);
+		fprint_safe(stdout, e->path[0] ? e->path : "(anonymous)", 0, 0);
+		printf("\n");
 	}
 
-	printf("\nUser Stack Trace (%s):\n", diag->ptrace_valid ? "ptrace RSP" : "syscall SP");
+	const char *method = user_stack_method_name(diag->user_stack.method);
+	if (diag->user_stack.valid && method)
+		printf("\nUser Stack Trace (%s, from %s):\n", method, diag->ptrace_valid ? "ptrace RSP" : "syscall SP");
+	else
+		printf("\nUser Stack Trace:\n");
+
 	if (diag->user_stack.valid && diag->user_stack.count > 0)
 	{
 		for (int i = 0; i < diag->user_stack.count; ++i)
 		{
 			const user_frame_t *f = &diag->user_stack.frames[i];
-			printf("   [%d]  0x%lx  %s\n", i, f->addr, f->region);
-			printf("         function: %s\n", f->function);
-			printf("         source: %s  (+0x%lx)\n", f->source, f->addr - f->region_start);
+			printf("   [%d]  0x%lx  ", i, f->addr);
+			fprint_safe(stdout, f->region, 0, 0);
+			printf("\n         function: ");
+			fprint_safe(stdout, f->function, 0, 0);
+			printf("\n         source: ");
+			fprint_safe(stdout, f->source, 0, 0);
+			if (f->region_start != 0)
+				printf("  (+0x%lx)", f->addr - f->region_start);
+			printf("\n");
 		}
 	}
 	else if (diag->user_stack.valid)
@@ -435,7 +637,8 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 {
 	char path[64];
 	FILE *fp;
-	char line[1024];
+	char *line = NULL;
+	size_t line_cap = 0;
 
 	maps->count = 0;
 
@@ -445,16 +648,29 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 	if (!fp)
 		return -1;
 
-	while (fgets(line, sizeof(line), fp))
+	while (getline(&line, &line_cap, fp) != -1)
 	{
-		if (maps->count >= MAX_MAPS)
-			break;
+		if (maps->count >= maps->capacity)
+		{
+			int new_cap = maps->capacity ? maps->capacity * 2 : MAPS_INITIAL_CAPACITY;
+			map_entry_t *grown = realloc(maps->entries, sizeof(map_entry_t) * new_cap);
+			if (!grown)
+			{
+				free(line);
+				fclose(fp);
+				return -1;
+			}
+
+			maps->entries = grown;
+			maps->capacity = new_cap;
+		}
 
 		map_entry_t *e = &maps->entries[maps->count];
+		memset(e, 0, sizeof(*e));
 
 		int parsed = sscanf(line, "%lx-%lx %4s %lx %*x:%*x %*d %255[^\n]", &e->start, &e->end, e->perms, &e->file_offset, e->path);
 
-		if (parsed < 3)
+		if (parsed < 4)
 			continue;
 
 		if (parsed < 5)
@@ -463,44 +679,63 @@ int read_process_maps(pid_t pid, process_maps_t *maps)
 		maps->count++;
 	}
 
+	free(line);
 	fclose(fp);
 	return 0;
 }
 
-static int is_call_target(int mem_fd, uint64_t addr)
+int is_indirect_call(const unsigned char *b, size_t len)
 {
-	unsigned char buf[7];
-	ssize_t n;
+	size_t i = ((b[0] & 0xF0) == 0x40) ? 1 : 0;
 
-	if (addr < 7)
+	if (len < i + 2 || b[i] != 0xFF)
 		return 0;
 
-	n = pread(mem_fd, buf, 5, (off_t)(addr - 5));
-	if (n == 5 && buf[0] == 0xE8)
+	unsigned char modrm = b[i + 1];
+	if ((modrm & 0x38) != 0x10)
+		return 0;
+
+	unsigned char mod = modrm >> 6;
+	unsigned char rm = modrm & 7;
+	size_t modrm_len = 1;
+
+	if (mod != 3 && rm == 4)
+	{
+		if (len < i + 3)
+			return 0;
+		modrm_len++;
+		if (mod == 0 && (b[i + 2] & 7) == 5)
+			modrm_len += 4;
+	}
+	else if (mod == 0 && rm == 5)
+		modrm_len += 4;
+
+	if (mod == 1)
+		modrm_len += 1;
+	else if (mod == 2)
+		modrm_len += 4;
+
+	return len == i + 1 + modrm_len;
+}
+
+static int is_call_target(int mem_fd, uint64_t addr)
+{
+	unsigned char buf[9];
+
+	if (addr < sizeof(buf))
+		return 0;
+
+	if (pread(mem_fd, buf, sizeof(buf), (off_t)(addr - sizeof(buf))) != (ssize_t)sizeof(buf))
+		return 0;
+
+	if (buf[sizeof(buf) - 5] == 0xE8)
 		return 1;
 
-	n = pread(mem_fd, buf, 2, (off_t)(addr - 2));
-	if (n == 2 && buf[0] == 0xFF && (buf[1] & 0x38) == 0x10)
-		return 1;
-
-	n = pread(mem_fd, buf, 3, (off_t)(addr - 3));
-	if (n == 3 && buf[0] == 0xFF && (buf[1] & 0x38) == 0x10)
-		return 1;
-
-	if (n == 3 && (buf[0] & 0xF0) == 0x40 && buf[1] == 0xFF && (buf[2] & 0x38) == 0x10)
-		return 1;
-
-	n = pread(mem_fd, buf, 2, (off_t)(addr - 6));
-	if (n == 2 && buf[0] == 0xFF && buf[1] == 0x15)
-		return 1;
-
-	n = pread(mem_fd, buf, 3, (off_t)(addr - 7));
-	if (n == 3 && (buf[0] & 0xF0) == 0x40 && buf[1] == 0xFF && buf[2] == 0x15)
-		return 1;
-
-	if (n == 3 && (buf[0] & 0xF0) == 0x40 && buf[1] == 0xFF &&
-		(buf[2] & 0x38) == 0x10 && (buf[2] & 0xC0) == 0x80)
-		return 1;
+	for (size_t len = 2; len <= 8; ++len)
+	{
+		if (is_indirect_call(buf + sizeof(buf) - len, len))
+			return 1;
+	}
 
 	return 0;
 }
@@ -516,6 +751,7 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 	diag->user_stack.count = 0;
 	diag->user_stack.valid = 0;
 	diag->user_stack.reason = 0;
+	diag->user_stack.method = USER_STACK_METHOD_NONE;
 
 	sp = diag->ptrace_valid ? diag->ptrace_regs[ELFREG_RSP] : diag->basic.stack_ptr;
 	if (sp == 0)
@@ -545,6 +781,7 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 	}
 
 	diag->user_stack.valid = 1;
+	diag->user_stack.method = USER_STACK_METHOD_HEURISTIC;
 
 	int num_values = bytes_read / 8;
 
@@ -596,6 +833,60 @@ int read_user_stack(pid_t pid, process_diagnostics_t *diag)
 	return 0;
 }
 
+uint64_t file_offset_to_vaddr(const char *binary_path, uint64_t offset)
+{
+	Elf64_Ehdr eh;
+	uint64_t result = offset;
+	int fd = open_regular(binary_path);
+
+	if (fd < 0)
+		return offset;
+
+	if (pread(fd, &eh, sizeof(eh), 0) != (ssize_t)sizeof(eh) ||
+		memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 ||
+		eh.e_ident[EI_CLASS] != ELFCLASS64 ||
+		eh.e_ident[EI_DATA] != ELFDATA2LSB ||
+		eh.e_phentsize != sizeof(Elf64_Phdr))
+	{
+		close(fd);
+		return offset;
+	}
+
+	for (unsigned int i = 0; i < eh.e_phnum; ++i)
+	{
+		Elf64_Phdr ph;
+
+		if (pread(fd, &ph, sizeof(ph), (off_t)(eh.e_phoff + (uint64_t)i * sizeof(ph))) != (ssize_t)sizeof(ph))
+			break;
+
+		if (ph.p_type == PT_LOAD && offset >= ph.p_offset && offset - ph.p_offset < ph.p_filesz)
+		{
+			result = offset - ph.p_offset + ph.p_vaddr;
+			break;
+		}
+	}
+
+	close(fd);
+	return result;
+}
+
+static int read_line_truncated(FILE *fp, char *buf, size_t size)
+{
+	if (!fgets(buf, (int)size, fp))
+		return -1;
+
+	size_t len = strlen(buf);
+	if (len > 0 && buf[len - 1] != '\n')
+	{
+		int c;
+		while ((c = fgetc(fp)) != EOF && c != '\n')
+			;
+	}
+
+	buf[strcspn(buf, "\n")] = '\0';
+	return 0;
+}
+
 void resolve_symbol(const char *binary_path, uint64_t offset,
 					char *func_out, size_t func_len,
 					char *src_out, size_t src_len)
@@ -612,27 +903,111 @@ void resolve_symbol(const char *binary_path, uint64_t offset,
 	if (strchr(binary_path, '\'') != NULL)
 		return;
 
-	snprintf(cmd, sizeof(cmd), "addr2line -e '%s' -f -C 0x%lx 2>/dev/null", binary_path, offset);
+	size_t path_len = strlen(binary_path);
+	if (path_len >= 10 && strcmp(binary_path + path_len - 10, " (deleted)") == 0)
+		return;
+
+	int probe_fd = open_regular(binary_path);
+	if (probe_fd < 0)
+		return;
+	close(probe_fd);
+
+	snprintf(cmd, sizeof(cmd), "/usr/bin/addr2line -e '%s' -f -C 0x%lx 2>/dev/null",
+			 binary_path, (unsigned long)file_offset_to_vaddr(binary_path, offset));
 
 	fp = popen(cmd, "r");
 	if (!fp)
 		return;
 
-	if (fgets(line, sizeof(line), fp))
+	if (read_line_truncated(fp, line, sizeof(line)) == 0)
 	{
-		line[strcspn(line, "\n")] = '\0';
 		strncpy(func_out, line, func_len - 1);
 		func_out[func_len - 1] = '\0';
 	}
 
-	if (fgets(line, sizeof(line), fp))
+	if (read_line_truncated(fp, line, sizeof(line)) == 0)
 	{
-		line[strcspn(line, "\n")] = '\0';
 		strncpy(src_out, line, src_len - 1);
 		src_out[src_len - 1] = '\0';
 	}
 
 	pclose(fp);
+}
+
+int parse_lock_line(const char *line, lock_entry_t *out)
+{
+	int num, consumed = 0;
+	long pid;
+	const char *p;
+
+	memset(out, 0, sizeof(*out));
+
+	if (sscanf(line, "%d: %n", &num, &consumed) < 1 || consumed == 0)
+		return -1;
+
+	p = line + consumed;
+	if (strncmp(p, "->", 2) == 0)
+	{
+		out->blocked = 1;
+		p += 2;
+	}
+
+	if (sscanf(p, "%15s %15s %15s %ld %x:%x:%lu", out->lock_type, out->advisory,
+			   out->access, &pid, &out->dev_major, &out->dev_minor, &out->inode) != 7)
+		return -1;
+
+	out->pid = (pid_t)pid;
+	return 0;
+}
+
+int lock_blocks_waiter(const lock_entry_t *l, long nr, uint64_t arg1)
+{
+	if (nr == 73)
+	{
+		int op = (int)arg1;
+
+		if (strcmp(l->lock_type, "FLOCK") != 0 || (op & LOCK_UN))
+			return 0;
+
+		if ((op & LOCK_SH) && strcmp(l->access, "READ") == 0)
+			return 0;
+
+		return 1;
+	}
+
+	return strcmp(l->lock_type, "POSIX") == 0 || strcmp(l->lock_type, "OFDLCK") == 0;
+}
+
+int lock_is_better(const lock_entry_t *best, const lock_entry_t *cand)
+{
+	return !best || (strcmp(best->access, "WRITE") != 0 && strcmp(cand->access, "WRITE") == 0);
+}
+
+static pid_t read_tgid(pid_t pid)
+{
+	char path[64];
+	char line[128];
+	pid_t tgid = pid;
+	FILE *fp;
+
+	snprintf(path, sizeof(path), "/proc/%d/status", pid);
+	fp = fopen(path, "r");
+	if (!fp)
+		return pid;
+
+	while (fgets(line, sizeof(line), fp))
+	{
+		int val;
+
+		if (sscanf(line, "Tgid: %d", &val) == 1 && val > 0)
+		{
+			tgid = (pid_t)val;
+			break;
+		}
+	}
+
+	fclose(fp);
+	return tgid;
 }
 
 int read_lock_conflict(pid_t pid, process_diagnostics_t *diag)
@@ -647,49 +1022,57 @@ int read_lock_conflict(pid_t pid, process_diagnostics_t *diag)
 	char file_path[MAX_PATH_LEN];
 
 	snprintf(fd_link, sizeof(fd_link), "/proc/%d/fd/%d", pid, fd);
-	if (read_proc_link(fd_link, file_path, sizeof(file_path)) < 0)
-		return -1;
 
 	struct stat st;
-	if (stat(file_path, &st) < 0)
+	if (stat(fd_link, &st) < 0)
 		return -1;
+
+	if (read_proc_link(fd_link, file_path, sizeof(file_path)) < 0)
+		file_path[0] = '\0';
 
 	unsigned int target_major = major(st.st_dev);
 	unsigned int target_minor = minor(st.st_dev);
 	unsigned long target_inode = (unsigned long)st.st_ino;
+	pid_t tgid = read_tgid(pid);
 
 	FILE *fp = fopen("/proc/locks", "r");
 	if (!fp)
 		return -1;
 
+	lock_entry_t best;
+	int have_best = 0;
 	char line[256];
 	while (fgets(line, sizeof(line), fp))
 	{
-		int lock_num;
-		char lock_type[16], advisory[16], access[16];
-		pid_t holder_pid;
-		unsigned int lmajor, lminor;
-		unsigned long linode;
+		lock_entry_t l;
 
-		if (sscanf(line, "%d: %15s %15s %15s %d %x:%x:%lx", &lock_num, lock_type,
-				   advisory, access, &holder_pid, &lmajor, &lminor, &linode) < 8)
+		if (parse_lock_line(line, &l) < 0 || l.blocked)
 			continue;
 
-		if (lmajor == target_major && lminor == target_minor && linode == target_inode && holder_pid != pid)
-		{
-			diag->lock_conflict.found = 1;
-			diag->lock_conflict.holder_pid = holder_pid;
-			strncpy(diag->lock_conflict.lock_type, lock_type, sizeof(diag->lock_conflict.lock_type) - 1);
-			diag->lock_conflict.lock_type[sizeof(diag->lock_conflict.lock_type) - 1] = '\0';
-			strncpy(diag->lock_conflict.access, access, sizeof(diag->lock_conflict.access) - 1);
-			diag->lock_conflict.access[sizeof(diag->lock_conflict.access) - 1] = '\0';
-			strncpy(diag->lock_conflict.path, file_path, sizeof(diag->lock_conflict.path) - 1);
-			diag->lock_conflict.path[sizeof(diag->lock_conflict.path) - 1] = '\0';
+		if (l.dev_major != target_major || l.dev_minor != target_minor ||
+			l.inode != target_inode || l.pid == tgid)
+			continue;
 
-			fclose(fp);
-			return 0;
+		if (!lock_blocks_waiter(&l, nr, diag->basic.syscall_args[1]))
+			continue;
+
+		if (lock_is_better(have_best ? &best : NULL, &l))
+		{
+			best = l;
+			have_best = 1;
 		}
 	}
+
 	fclose(fp);
-	return -1;
+
+	if (!have_best)
+		return -1;
+
+	diag->lock_conflict.found = 1;
+	diag->lock_conflict.holder_pid = best.pid;
+	snprintf(diag->lock_conflict.lock_type, sizeof(diag->lock_conflict.lock_type), "%s", best.lock_type);
+	snprintf(diag->lock_conflict.access, sizeof(diag->lock_conflict.access), "%s", best.access);
+	snprintf(diag->lock_conflict.advisory, sizeof(diag->lock_conflict.advisory), "%s", best.advisory);
+	snprintf(diag->lock_conflict.path, sizeof(diag->lock_conflict.path), "%s", file_path);
+	return 0;
 }

@@ -1,3 +1,7 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -66,6 +70,7 @@ char analyze_child(pid_t pid)
 int main(void)
 {
 	printf("[Monitor]: Starting Search (PID %d)\n", getpid());
+	fflush(stdout);
 
 	pid_t pid = fork();
 
@@ -91,7 +96,8 @@ int main(void)
 		analyze_child(pid);
 
 		printf("\n[Monitor]: Trying SIGTERM on child (kill %d)...\n", pid);
-		kill(pid, SIGTERM);
+		if (kill(pid, SIGTERM) < 0)
+			perror("[Monitor]: kill SIGTERM");
 
 		sleep(2);
 
@@ -103,7 +109,15 @@ int main(void)
 			printf("\n[Monitor]: SIGTERM was ignored! Process is still in D-State.\n");
 			printf("[Monitor]: On modern kernels, SIGKILL can wake FUSE D-state (TASK_KILLABLE).\n");
 			printf("[Monitor]: But the real fix is to kill the FUSE daemon.\n");
-			waitpid(pid, NULL, WNOHANG);
+
+			if (kill(pid, SIGKILL) < 0)
+				perror("[Monitor]: kill SIGKILL");
+			sleep(1);
+
+			if (waitpid(pid, NULL, WNOHANG) == pid)
+				printf("[Monitor]: SIGKILL ended the child.\n");
+			else
+				printf("[Monitor]: Child %d is still stuck and was left behind; run 'make kill' to stop the FUSE daemon.\n", pid);
 		}
 		else
 		{

@@ -44,8 +44,14 @@ typedef enum
 #define MAX_PATH_LEN 512
 #define MAX_WCHAN_LEN 64
 #define MAX_STACK_LEN 8192
-#define MAX_MAPS 256
+#define MAPS_INITIAL_CAPACITY 256
 #define MAX_USER_FRAMES 32
+#define MAX_AUXV_LEN 4096
+#define MAX_CORE_SIZE (4ULL * 1024 * 1024 * 1024)
+
+#define USER_STACK_METHOD_NONE 0
+#define USER_STACK_METHOD_LIBUNWIND 1
+#define USER_STACK_METHOD_HEURISTIC 2
 typedef struct
 {
     uint64_t start;
@@ -57,8 +63,9 @@ typedef struct
 
 typedef struct
 {
-    map_entry_t entries[MAX_MAPS];
+    map_entry_t *entries;
     int count;
+    int capacity;
 } process_maps_t;
 
 typedef struct
@@ -76,6 +83,7 @@ typedef struct
     int count;
     int valid;
     int reason;
+    int method;
 } user_stack_t;
 
 typedef struct
@@ -84,8 +92,21 @@ typedef struct
     pid_t holder_pid;
     char lock_type[16];
     char access[16];
+    char advisory[16];
     char path[MAX_PATH_LEN];
 } lock_conflict_t;
+
+typedef struct
+{
+    int blocked;
+    char lock_type[16];
+    char advisory[16];
+    char access[16];
+    pid_t pid;
+    unsigned int dev_major;
+    unsigned int dev_minor;
+    unsigned long inode;
+} lock_entry_t;
 
 typedef struct
 {
@@ -119,6 +140,8 @@ typedef struct
     char kernel_stack[MAX_STACK_LEN];
     int kernel_stack_valid;
 
+    int is_32bit;
+
     int blocking_fd;
     char blocking_path[MAX_PATH_LEN];
 
@@ -143,6 +166,15 @@ int find_dstate_processes(dstate_process_t **results, int *count);
 void free_dstate_list(dstate_process_t *list);
 void print_dstate_summary(const dstate_process_t *procs, int count);
 
+int parse_stat_line(const char *line, dstate_process_t *proc);
+int parse_syscall_line(const char *line, dstate_process_t *proc);
+int parse_lock_line(const char *line, lock_entry_t *out);
+int mapping_image_is_safe(const char *path);
+int is_indirect_call(const unsigned char *b, size_t len);
+int lock_blocks_waiter(const lock_entry_t *l, long nr, uint64_t arg1);
+int lock_is_better(const lock_entry_t *best, const lock_entry_t *cand);
+uint64_t file_offset_to_vaddr(const char *binary_path, uint64_t offset);
+
 int read_process_stat(pid_t pid, dstate_process_t *proc);
 int read_process_syscall(pid_t pid, dstate_process_t *proc);
 int read_process_wchan(pid_t pid, char *wchan, size_t len);
@@ -152,6 +184,8 @@ const char *syscall_name(long nr, char *buf, size_t buflen);
 void print_diagnostics(const process_diagnostics_t *diag);
 
 int read_process_maps(pid_t pid, process_maps_t *maps);
+void free_process_maps(process_maps_t *maps);
+void free_diagnostics(process_diagnostics_t *diag);
 int read_user_stack(pid_t pid, process_diagnostics_t *diag);
 void resolve_symbol(const char *binary_path, uint64_t offset,
                     char *func_out, size_t func_len,
